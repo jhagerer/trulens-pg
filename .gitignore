@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+src/trulens_pg/_version.py
+.streamlit/secrets.toml
+.env
+default.sqlite
+*.sqlite

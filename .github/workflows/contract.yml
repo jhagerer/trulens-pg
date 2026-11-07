@@ -1,0 +1,25 @@
+name: TruLens contract
+
+# Weekly check against the newest TruLens release. A failure means a TruLens
+# change touches internals that trulens-pg relies on (spec section 8, risks).
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - name: Install the newest TruLens
+        run: uv pip install --upgrade trulens-core trulens-feedback
+      - run: uv run --no-sync python -c "import trulens.core, importlib.metadata as m; print(m.version('trulens-core'))"
+      - run: uv run --no-sync pytest tests/unit -m contract -q

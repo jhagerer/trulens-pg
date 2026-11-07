@@ -1,0 +1,10 @@
+# gitleaks configuration: default rules plus an allow-list for test fixtures.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Local test database credentials used only in CI and docs"
+regexes = [
+  '''postgresql\+psycopg://postgres:postgres@localhost''',
+  '''postgresql\+psycopg://user:password@localhost''',
+]
