@@ -192,7 +192,7 @@ def test_benchmark_source_with_stored_metrics(
     store.create_metric("policy_citation", "llm_judge")
     draft = store.create_draft(
         "policy_citation",
-        prompt_template="Question: {question}\nAnswer: {answer}",
+        prompt_text="Question: {{question}}\nAnswer: {{answer}}",
         rubric="3 if the answer cites a clause number, 0 otherwise.",
         judge={"provider": "openai", "model": "gpt-4o-mini"},
     )
@@ -268,3 +268,35 @@ def test_unpublished_benchmark_version_is_not_a_source(ctx: Any, repo: Any) -> N
                 dataset_spec={"input": "input"},
             )
         )
+
+
+def test_production_traces_become_draft_items(ctx: Any, repo: Any, store: Any) -> None:
+    """Spec section 6.1: import recorded traces through TruLens curate_records_to_dataset."""
+    from trulens_pg import trulens_store
+
+    rag = ClaimsRag()
+    app_name = _unique("prod")
+    tru_app = tpg.wrap(rag, app_name=app_name, app_version="v1", main_method=rag.answer)
+    run = tru_app.add_run(
+        RunConfig(run_name=_unique("r"), dataset_name="prod", dataset_spec={"input": "input"})
+    )
+    run.start(input_df=pd.DataFrame({"input": ["motor glass?", "home flood?", "motor theft?"]}))
+    tpg.metrics.resolve.wait_for_invocation(run, timeout=60, poll_interval=0.5)
+
+    records, _ = ctx.session.get_records_and_feedback(app_name=app_name)
+    assert len(records) == 3
+    selected = trulens_store.filter_traces(records)
+    result, items = trulens_store.traces_to_items(
+        store.trulens, selected, dataset="claims_faq", expected_response="output"
+    )
+    assert result.accepted == 3
+    assert result.dataset_name.startswith("trulens-pg-import/claims_faq/")
+    assert {i["query"] for i in items} == {"motor glass?", "home flood?", "motor theft?"}
+    first = next(i for i in items if i["query"] == "motor glass?")
+    assert first["ground_truth_answer"].startswith("Covered under clause KFZ-1001")
+    assert first["metadata"]["source_app_name"] == app_name
+    assert first["external_id"].startswith("trace-")
+
+    repo.create_dataset("claims_faq")
+    draft = repo.create_draft("claims_faq", copy_from=None)
+    assert repo.add_items(draft.version_id, items) == 3

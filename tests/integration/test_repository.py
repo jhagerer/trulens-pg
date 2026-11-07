@@ -166,3 +166,45 @@ def test_versions_must_increase(repo: Any, published: Any) -> None:
         repo.create_draft("claims_faq", "0.9.0")
     with pytest.raises(ValidationError):
         repo.create_draft("claims_faq", "1.0.0")
+
+
+def test_publish_writes_trulens_dataset(repo: Any, published: Any, ctx: Any) -> None:
+    """Spec section 5: a published version is also a TruLens dataset <dataset>@<version>."""
+    from trulens.feedback import GroundTruthAgreement
+
+    from trulens_pg.metrics.build import _offline_provider
+
+    assert published.trulens_dataset == "claims_faq@1.0.0"
+    frame = ctx.session.get_ground_truth("claims_faq@1.0.0")
+    assert len(frame) == 6  # PII items stay inside the same database
+    row = frame.set_index("query_id").loc["q001"]
+    assert row["query"] == "Question 1 about motor insurance?"
+    assert row["expected_response"].endswith("KFZ-1001.")
+    assert row["expected_chunks"][0]["text"] == "Clause text 1"
+    assert row["meta"]["split"] == "test"
+    assert row["meta"]["tags"] == ["motor"]
+
+    gta = GroundTruthAgreement(frame, provider=_offline_provider())
+    assert gta.recall_at_k(row["query"], ["Clause text 1", "other"], k=2) == 1.0
+
+    # Idempotent: syncing again writes no duplicate rows.
+    repo.sync_trulens_dataset(repo.get_version("claims_faq", "1.0.0").version_id)
+    assert len(ctx.session.get_ground_truth("claims_faq@1.0.0")) == 6
+
+
+def test_trulens_dataset_name_clash_is_refused(repo: Any, published: Any, ctx: Any) -> None:
+    """TruLens merges datasets with the same name; other content under the name is refused."""
+    from trulens_pg.errors import ValidationError as TpgValidationError
+
+    with pytest.raises(TpgValidationError, match="other content"):
+        repo.trulens.write_dataset(
+            "claims_faq@1.0.0",
+            [{"query": "other"}],
+            meta={"source": "trulens-pg", "content_hash": "different"},
+        )
+
+
+def test_drafts_are_not_written_to_trulens(repo: Any, published: Any) -> None:
+    draft = repo.create_draft("claims_faq")
+    with pytest.raises(WorkflowError, match="published"):
+        repo.sync_trulens_dataset(draft.version_id)

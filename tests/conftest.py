@@ -108,6 +108,7 @@ def ctx(pg_session: Any) -> Any:
                 f'"{TEST_SCHEMA}".corpus, "{TEST_SCHEMA}".dataset CASCADE'
             )
         )
+        conn.execute(text("TRUNCATE trulens_ground_truth, trulens_dataset CASCADE"))
     return context
 
 
@@ -115,14 +116,14 @@ def ctx(pg_session: Any) -> Any:
 def repo(ctx: Any) -> Any:
     from trulens_pg.bench import Repository
 
-    return Repository(ctx.engine, ctx.bench_schema)
+    return Repository(ctx.engine, ctx.bench_schema, trulens_db=ctx.session.connector.db)
 
 
 @pytest.fixture
 def store(ctx: Any) -> Any:
     from trulens_pg.metrics import MetricStore
 
-    return MetricStore(ctx.engine, ctx.bench_schema)
+    return MetricStore(ctx.engine, ctx.bench_schema, trulens_db=ctx.session.connector.db)
 
 
 SAMPLE_ITEMS = [

@@ -10,7 +10,7 @@ stays unchanged.
 |---|---|
 | **G1** The run backend is wired only with `connector=`; otherwise `ValueError: Run DAO not initialized` | `tpg.wrap()` / `tpg.attach()` install `PgRunDao` |
 | **G2** `source_type="TABLE"` fails with `NotImplementedError` | `PgRunDao.fetch_source_data` reads tables, views and published benchmark versions |
-| **G3** No dashboard to manage benchmark datasets and metrics | Streamlit dashboard on a versioned `bench` schema |
+| **G3** No dashboard to manage benchmark datasets and metrics; the TruLens dashboard manages only prompt versions | Streamlit dashboard on a versioned `bench` schema |
 
 It also provides a **custom metric store**: LLM-judge metrics are defined, calibrated against
 human labels and versioned as Postgres rows. They run by name on Postgres and, as client-side
@@ -96,16 +96,37 @@ bench:claims_faq@1.2.0?sample=0.2&seed=2026      # deterministic by hash of the 
 
 | Kind | Stored definition | Built as |
 |---|---|---|
-| `llm_judge` | Prompt template (`{question}`, `{answer}`, `{contexts}`, `{ground_truth}`), rubric, score range, few-shot examples | Fills the template and calls the judge's `generate_score_and_reasons()` (score normalised to 0..1, plus reasons) |
+| `llm_judge` | Pinned version of a judge prompt in the TruLens prompt registry, with placeholders (`{{question}}`, `{{answer}}`, `{{contexts}}`, `{{ground_truth}}`), rubric, score range, few-shot examples | Renders the pinned prompt version locally and calls the judge's `generate_score_and_reasons()` (score normalised to 0..1, plus reasons) |
 | `criteria` | Criteria text for one allow-listed provider method (`correctness`, `coherence`, `relevance`, `context_relevance`, ...) | `<method>_with_cot_reasons` of the judge with the criteria |
 | `ground_truth` | One `GroundTruthAgreement` method (`recall_at_k`, `precision_at_k`, `ndcg_at_k`, `mrr`, `ir_hit_rate`, `agreement_measure`) and `k` | Golden set from the benchmark version and its corpus |
 | `python_ref` | Name of an entry point in the group `trulens_pg.metrics` | The function of an installed, reviewed package |
 
-The database holds no executable code: templates allow plain placeholder names only (no
-attribute access, indexing or format specs), and `python_ref` resolves only entry points of
-installed packages. Each built metric is named `<name>@<version>` in the TruLens dashboard;
+The database holds no executable code: judge prompts use TruLens `{{variable}}`
+placeholders only (no statements, expressions or filters) and are rendered locally without a
+model call, and `python_ref` resolves only entry points of installed packages. Each built metric is named `<name>@<version>` in the TruLens dashboard;
 judge provider, model and temperature are stored in the result metadata and in
 `bench.run_metric`.
+
+#### Judge prompts in the TruLens prompt registry
+
+Judge prompts live in the TruLens prompt registry (tables `Prompt`, `PromptVersion`,
+`PromptLabel`, TruLens 2.14 or later). They get immutable versions, labels such as
+`production`, and a diff view in the TruLens Prompts tab. `bench.metric_version.prompt_version_id`
+pins an exact `PromptVersion` id, never a label, so moving a label cannot change a published
+metric.
+
+```python
+store = tpg.MetricStore.from_context()
+store.create_metric("policy_citation", "llm_judge")
+# Creates a version of the prompt "trulens-pg.policy_citation" and pins it:
+draft = store.create_draft(
+    "policy_citation",
+    prompt_text="Question: {{question}}\n\nAnswer: {{answer}}",
+    rubric="3: the answer names the clause it relies on. 0: no clause.",
+)
+# Or pin a version created elsewhere (TruSession.create_prompt_version):
+store.create_draft("policy_citation", prompt_version_id="prompt_version_hash_...")
+```
 
 Register your own `python_ref` metric in your package's `pyproject.toml`:
 
@@ -129,6 +150,14 @@ touch it; TruLens keeps managing its own tables.
   TruLens `dataset_spec` names `input`, `ground_truth_output`, `ground_truth_context_ids`,
   `item_id`, `split`, `tags`.
 - Items with `contains_pii = true` are left out of exports unless `include_pii=True`.
+- On publish, the version is also written as a TruLens dataset (`Dataset` plus `GroundTruth`
+  rows, in the TruLens tables) named `<dataset>@<version>`. Mapping: `query` → `query`,
+  `external_id` → `query_id`, `ground_truth_answer` → `expected_response`, the texts of the
+  `ground_truth_context_ids` chunks → `expected_chunks`; split, tags, difficulty, language,
+  PII flag and metadata → `meta`. `TruSession.get_ground_truth("claims_faq@1.0.0")` and
+  `GroundTruthAgreement` then work on published benchmarks. Versions, review, corpus and
+  metric tables stay in `bench`, because TruLens datasets have none of these. Writing is
+  idempotent; `trulens-pg bench sync-trulens` repeats it.
 
 ## Streamlit dashboard (G3)
 
@@ -140,6 +169,16 @@ trulens-pg app --port 8502
 
 Pages — Benchmarks: Datasets, Import, Items, Corpus, Review, Publish, Runs, Export.
 Metrics: Metrics, Metric editor, Playground, Calibration, Metric publish, Metric sets.
+
+- **Import** reads CSV, JSONL, Parquet, a Hugging Face dataset, or recorded production traces
+  (selected by app, app version, time range or metric score). Traces are converted with
+  TruLens `curate_records_to_dataset` (column mapping, provenance metadata, error report),
+  staged as the TruLens dataset `trulens-pg-import/<dataset>/<timestamp>`, and copied with
+  their provenance into a new draft. A recorded output used as answer is a draft ground truth
+  that reviewers must check.
+- **Metric editor** writes a judge prompt as a new TruLens prompt version or picks one from
+  the registry; placeholders are checked against the mapped inputs.
+
 Pages use only the repository and metric store; every write is one transaction and is
 confirmed with the affected row count. Playground and calibration show the number of judge
 calls before they start.
@@ -166,6 +205,7 @@ trulens-pg bench list [DATASET]
 trulens-pg bench import FILE --dataset NAME [--create] [--version X.Y.Z] [--map query=question]
                          [--append] [--corpus NAME] [--publish] [--dry-run] [--hf PATH]
 trulens-pg bench import-corpus FILE --corpus NAME [--create]
+trulens-pg bench sync-trulens [DATASET@VERSION]   # write published versions as TruLens datasets
 trulens-pg bench export DATASET@VERSION --target jsonl|csv|parquet|snowflake [--include-pii]
                          [--snowflake-table DB.SCHEMA.TABLE --snowflake-connection NAME]
 trulens-pg app [--port 8502]
@@ -182,6 +222,12 @@ Snowflake through `resolve_metrics()`, which returns client-side `Metric` object
 recorded per result. `Repository.link_run(..., platform="snowflake")` records Snowflake runs
 in `bench.run_link`.
 
+Open question (spec section 8): whether the Snowflake connector supports the TruLens prompt
+and dataset tables is not verified. `resolve_metrics()` reads the pinned prompt version from
+the Postgres registry and builds the `Metric` on the client, so a Snowflake run works when the
+client can reach the Postgres database. Otherwise the judge prompt text and the dataset must
+be exported separately.
+
 ## Design decisions on the open questions of the spec
 
 | Question (spec section 8) | Decision in this implementation |
@@ -193,6 +239,7 @@ in `bench.run_link`.
 | Dataset names | Lower-case slugs (`claims_faq`), so view names are valid identifiers; long names go into `description`. |
 | Item identity across versions | `external_id` (stable; derived from the query text if the source has none). Diffs and sampling use it. |
 | Review gate | Publishing needs status `in_review` and an `accept` or `reject` decision for every item; `edit` keeps an item open; rejected items are removed on publish. The CLI can publish without review (`--publish`) for automated imports. |
+| Old metric versions with `prompt_template` | Migration `0002` replaces the column with `prompt_version_id`. It stops with an error if a stored version still holds a template; move such templates into the registry first. |
 | Python version | 3.12 and 3.13 (the spec listed 3.10 to 3.13; this repository targets 3.12). |
 
 ## Known limits
@@ -206,6 +253,10 @@ in `bench.run_link`.
 - The Runs page reads TruLens results for Postgres runs; Snowflake runs are listed with
   their metadata only.
 - The read target "100,000 items in under 10 s" (spec section 8) is not measured yet.
+- Publishing writes the bench schema and the TruLens dataset in two transactions (TruLens
+  uses its own sessions). If the second write fails, the version stays published and the
+  error says so; `trulens-pg bench sync-trulens` repeats the idempotent write.
+- Each trace import leaves its staging dataset in the TruLens tables as a provenance record.
 
 ## Development
 

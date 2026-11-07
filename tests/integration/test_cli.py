@@ -20,7 +20,9 @@ def _cli(pg_url: str, *args: str) -> int:
 
 def test_db_current(pg_url: str, ctx: Any, capsys: pytest.CaptureFixture[str]) -> None:
     assert _cli(pg_url, "db", "current") == 0
-    assert "current=0001" in capsys.readouterr().out
+    from trulens_pg.migrations import head_revision
+
+    assert f"current={head_revision()}" in capsys.readouterr().out
     assert _cli(pg_url, "db", "upgrade") == 0
 
 
@@ -75,6 +77,7 @@ def test_import_publish_export_example(
     )
     out = capsys.readouterr().out
     assert "Published claims_faq@1.0.0 (50 items)" in out
+    assert "Wrote the TruLens dataset claims_faq@1.0.0." in out
 
     version = repo.get_version("claims_faq", "1.0.0")
     assert version.published_by == "ci"

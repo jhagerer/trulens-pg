@@ -52,6 +52,8 @@ def test_page_renders_with_data(app_env: None, published: Any, store: Any, page:
     draft = store.create_draft("has_policy_number", python_ref="contains_policy_number")
     store.publish(draft.metric_version_id, published_by="tester")
     store.create_draft("has_policy_number")
+    store.create_metric("policy_citation", "llm_judge")
+    store.create_draft("policy_citation", prompt_text="Q: {{question}}\nA: {{answer}}")
     at = _run(APP / "pages" / page)
     assert not at.exception, at.exception
     assert not at.error, [e.value for e in at.error]
@@ -77,3 +79,25 @@ def test_viewer_cannot_publish(
     assert any("publisher role" in i.value for i in at.info)
     publish = next(b for b in at.button if b.label == "Publish")
     assert publish.disabled
+
+
+def test_metric_editor_shows_pinned_prompt(app_env: None, store: Any) -> None:
+    store.create_metric("policy_citation", "llm_judge")
+    draft = store.create_draft("policy_citation", prompt_text="Q: {{question}}\nA: {{answer}}")
+    at = _run(APP / "pages" / "metric_editor.py")
+    assert not at.exception
+    assert any(draft.prompt_version_id in c.value for c in at.caption)
+    assert any("every placeholder has a mapped input" in s.value for s in at.success)
+    at.radio[0].set_value("Pick a version from the registry").run()
+    assert not at.exception
+    assert not at.error, [e.value for e in at.error]
+
+
+def test_import_page_trace_source(app_env: None, published: Any) -> None:
+    at = _run(APP / "pages" / "import_items.py")
+    at.radio[0].set_value("Production traces").run()
+    assert not at.exception
+    at.text_input[0].input("no_such_app").run()
+    assert not at.exception
+    assert not at.error, [e.value for e in at.error]
+    assert any("0 recorded trace(s)" in c.value for c in at.caption)

@@ -10,7 +10,7 @@ from trulens_pg.metrics.build import (
     MetricDefinition,
     build_implementation,
     build_metric,
-    render_user_prompt,
+    render_prompts,
     template_placeholders,
     validate_definition,
 )
@@ -21,8 +21,9 @@ from trulens_pg.metrics.store import (
     parse_metric_ref,
     spearman,
 )
+from trulens_pg.trulens_store import make_resolved_prompt
 
-TEMPLATE = "Question: {question}\nAnswer: {answer}\nContexts: {contexts}"
+TEMPLATE = "Question: {{question}}\nAnswer: {{ answer }}\nContexts: {{contexts}}"
 
 
 def judge_defn(**kw: Any) -> MetricDefinition:
@@ -30,7 +31,8 @@ def judge_defn(**kw: Any) -> MetricDefinition:
         "name": "policy_citation",
         "kind": "llm_judge",
         "version": 1,
-        "prompt_template": TEMPLATE,
+        "prompt_version_id": "prompt_version_test",
+        "prompt": make_resolved_prompt(TEMPLATE),
         "rubric": "3: cites the clause; 0: no citation.",
         "score_min": 0,
         "score_max": 3,
@@ -39,16 +41,39 @@ def judge_defn(**kw: Any) -> MetricDefinition:
     return MetricDefinition(**base)
 
 
-def test_placeholders_plain_names_only() -> None:
-    assert template_placeholders("{a} {b} {a} {{literal}}") == ["a", "b"]
-    for bad in ("{a.__class__}", "{a[0]}", "{a!r}", "{a:>10}", "{0}", "{"):
+def test_placeholders_use_trulens_rules() -> None:
+    assert template_placeholders("{{a}} {{ b }} {{a}} {single}") == ["a", "b"]
+    for bad in ("{{a.__class__}}", "{{a[0]}}", "{{a | upper}}", "{% if a %}x{% endif %}"):
         with pytest.raises(ValidationError):
             template_placeholders(bad)
 
 
-def test_render_user_prompt_joins_contexts() -> None:
-    text = render_user_prompt(TEMPLATE, {"question": "q", "answer": "a", "contexts": ["x", "y"]})
-    assert "Contexts: [1] x\n\n[2] y" in text
+def test_render_prompts_locally() -> None:
+    prompt = make_resolved_prompt(TEMPLATE)
+    system, user = render_prompts(
+        prompt, "SYSTEM", {"question": "q", "answer": "a", "contexts": ["x", "y"]}
+    )
+    assert system == "SYSTEM"
+    assert "Contexts: [1] x\n\n[2] y" in user
+    assert "Answer: a" in user
+
+
+def test_chat_prompt_system_messages_extend_the_system_prompt() -> None:
+    from trulens.core.schema.prompt import Prompt, PromptVersion, ResolvedPrompt
+
+    prompt = Prompt(slug="chat", prompt_type="chat")
+    version = PromptVersion(
+        prompt_id=prompt.prompt_id,
+        prompt_type="chat",
+        messages=[
+            {"role": "system", "content": "Be strict."},
+            {"role": "user", "content": "Answer: {{answer}}"},
+        ],
+    )
+    resolved = ResolvedPrompt(prompt=prompt, version=version)
+    system, user = render_prompts(resolved, "BASE", {"answer": "a"})
+    assert system == "BASE\n\nBe strict."
+    assert user == "Answer: a"
 
 
 def test_default_inputs_from_placeholders() -> None:
@@ -63,8 +88,10 @@ def test_validation_messages() -> None:
     assert validate_definition(judge_defn()) == []
     errors = validate_definition(judge_defn(inputs={"question": "record_input"}))
     assert any("without a mapped input" in e for e in errors)
-    errors = validate_definition(judge_defn(prompt_template="{foo}"))
+    errors = validate_definition(judge_defn(prompt=make_resolved_prompt("{{foo}}")))
     assert any("without a mapped input" in e for e in errors)
+    errors = validate_definition(judge_defn(prompt_version_id=None, prompt=None))
+    assert any("prompt_version_id" in e for e in errors)
     assert validate_definition(judge_defn(score_min=3, score_max=3))
     assert validate_definition(MetricDefinition(name="x", kind="criteria", params={"method": "x"}))
     assert validate_definition(
@@ -80,6 +107,7 @@ def test_llm_judge_implementation_calls_judge(fake_judge: Any) -> None:
     assert score == 1.0
     assert meta["judge_model"] == "fake-judge-1"
     assert meta["metric_version"] == 1
+    assert meta["prompt_version_id"] == "prompt_version_test"
     assert "Is glass covered?" in fake_judge.calls[0]["user"]
     assert "integer score from 0 to 3" in fake_judge.calls[0]["system"]
     assert info["model"] == "fake-judge-1"

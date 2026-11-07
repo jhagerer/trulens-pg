@@ -168,3 +168,5 @@ class PublishResult:
     view: str
     removed_rejected: int = 0
     duplicate_of: list[str] = field(default_factory=list)
+    trulens_dataset: str | None = None
+    """Name of the TruLens dataset written on publish (``<dataset>@<version>``)."""

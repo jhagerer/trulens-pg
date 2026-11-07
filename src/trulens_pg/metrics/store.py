@@ -30,7 +30,7 @@ from trulens_pg.metrics.build import (
 from trulens_pg.metrics.judges import judge_model_label
 
 DEFINITION_FIELDS = (
-    "prompt_template",
+    "prompt_version_id",
     "rubric",
     "criteria",
     "score_min",
@@ -93,6 +93,15 @@ def mean_abs_error(x: Sequence[float], y: Sequence[float]) -> float | None:
     if len(x) != len(y) or not x:
         return None
     return float(np.mean(np.abs(np.asarray(x, dtype=float) - np.asarray(y, dtype=float))))
+
+
+def _prompt_text(prompt: Any) -> str | None:
+    if prompt is None:
+        return None
+    version = prompt.version
+    if version.text is not None:
+        return str(version.text)
+    return "\n\n".join(f"[{m_.role.value}] {m_.content}" for m_ in version.messages or [])
 
 
 @dataclass
@@ -241,15 +250,48 @@ class MetricStore(BenchDB):
 
     # ----------------------------------------------------------------- versions
 
-    @staticmethod
-    def _definition(metric: m.Metric, version: m.MetricVersion) -> MetricDefinition:
+    def _prompt(self, version_id: str | None) -> Any:
+        """Load a pinned prompt version (versions are immutable, so they are cached)."""
+        if not version_id:
+            return None
+        cache: dict[str, Any] = self.__dict__.setdefault("_prompt_cache", {})
+        if version_id not in cache:
+            cache[version_id] = self.trulens.resolve_prompt_version(version_id)
+        return cache[version_id]
+
+    def _prompt_fields(
+        self,
+        name: str,
+        fields: dict[str, Any],
+        prompt_text: str | None,
+        prompt_slug: str | None,
+        created_by: str | None,
+    ) -> dict[str, Any]:
+        """Turn ``prompt_text`` into a new registry version; check a given version id."""
+        from trulens_pg.trulens_store import default_prompt_slug
+
+        if prompt_text is not None:
+            version = self.trulens.create_judge_prompt_version(
+                prompt_slug or default_prompt_slug(name),
+                prompt_text,
+                description=f"Judge prompt of the trulens-pg metric {name}",
+                change_note=fields.get("changelog"),
+                created_by=created_by,
+            )
+            fields["prompt_version_id"] = version.version_id
+        elif fields.get("prompt_version_id"):
+            self._prompt(fields["prompt_version_id"])  # raises NotFoundError
+        return fields
+
+    def _definition(self, metric: m.Metric, version: m.MetricVersion) -> MetricDefinition:
         return MetricDefinition(
             name=metric.name,
             kind=metric.kind,
             version=version.version,
             description=metric.description,
             higher_is_better=metric.higher_is_better,
-            prompt_template=version.prompt_template,
+            prompt_version_id=version.prompt_version_id,
+            prompt=self._prompt(version.prompt_version_id),
             rubric=version.rubric,
             criteria=version.criteria,
             score_min=version.score_min,
@@ -275,12 +317,27 @@ class MetricStore(BenchDB):
         *,
         copy_from: str | int | None = "latest",
         created_by: str | None = None,
+        prompt_text: str | None = None,
+        prompt_slug: str | None = None,
         **fields: Any,
     ) -> MetricDefinition:
-        """Create the next version as a draft, copied from the latest version by default."""
+        """Create the next version as a draft, copied from the latest version by default.
+
+        Args:
+            name: Metric name.
+            copy_from: ``"latest"``, a version number, or ``None`` for an empty draft.
+            created_by: User name.
+            prompt_text: Judge prompt with ``{{variable}}`` placeholders; stored as a
+                new version in the TruLens prompt registry (slug ``prompt_slug``,
+                default ``trulens-pg.<name>``) and pinned by its version id.
+            prompt_slug: Registry slug for ``prompt_text``.
+            **fields: Definition fields, for example ``prompt_version_id`` to pin a
+                version picked from the registry.
+        """
         unknown = set(fields) - set(DEFINITION_FIELDS) - {"changelog"}
         if unknown:
             raise ValidationError(f"Unknown metric field(s): {sorted(unknown)}")
+        fields = self._prompt_fields(name, fields, prompt_text, prompt_slug, created_by)
         with self.transaction() as s:
             metric = self._metric(s, name)
             versions = metric.versions
@@ -307,10 +364,25 @@ class MetricStore(BenchDB):
             s.refresh(mv)
             return self._definition(metric, mv)
 
-    def update_draft(self, metric_version_id: uuid.UUID | str, **fields: Any) -> MetricDefinition:
+    def update_draft(
+        self,
+        metric_version_id: uuid.UUID | str,
+        *,
+        prompt_text: str | None = None,
+        prompt_slug: str | None = None,
+        updated_by: str | None = None,
+        **fields: Any,
+    ) -> MetricDefinition:
+        """Change a draft; ``prompt_text`` creates a new registry version (see `create_draft`)."""
         unknown = set(fields) - set(DEFINITION_FIELDS) - {"changelog"}
         if unknown:
             raise ValidationError(f"Unknown metric field(s): {sorted(unknown)}")
+        with self.transaction() as s:
+            mv = self._mv(s, metric_version_id)
+            if mv.status not in m.EDITABLE_STATUSES:
+                raise WorkflowError(f"Version {mv.version} is {mv.status}; create a new draft.")
+            name = mv.metric.name
+        fields = self._prompt_fields(name, fields, prompt_text, prompt_slug, updated_by)
         with self.transaction() as s:
             mv = self._mv(s, metric_version_id)
             if mv.status not in m.EDITABLE_STATUSES:
@@ -368,6 +440,16 @@ class MetricStore(BenchDB):
                 for f in DEFINITION_FIELDS
                 if base is None or getattr(base, f) != getattr(mv, f)
             ]
+            base_prompt = None if base is None else base.prompt_version_id
+            draft_prompt = mv.prompt_version_id
+        if base_prompt != draft_prompt:
+            rows.append(
+                {
+                    "field": "prompt text",
+                    "base": _prompt_text(self._prompt(base_prompt)),
+                    "draft": _prompt_text(self._prompt(draft_prompt)),
+                }
+            )
         return pd.DataFrame(rows, columns=["field", "base", "draft"])
 
     # ------------------------------------------------------------------- labels

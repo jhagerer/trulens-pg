@@ -72,6 +72,11 @@ def item_content(item: m.Item) -> dict[str, Any]:
     }
 
 
+def trulens_dataset_name(dataset: str, version: str) -> str:
+    """Name of the TruLens dataset of a published version: ``<dataset>@<version>``."""
+    return f"{dataset}@{version}"
+
+
 def next_version(current: str | None, bump: str = "minor") -> str:
     """Next semantic version after ``current`` (``1.0.0`` if there is none)."""
     if current is None:
@@ -713,7 +718,7 @@ class Repository(BenchDB):
                 version.changelog = changelog
             s.flush()
             view = self._create_view(s, version)
-            return PublishResult(
+            result = PublishResult(
                 dataset=version.dataset.name,
                 version=version.version,
                 content_hash=content_hash,
@@ -722,6 +727,17 @@ class Repository(BenchDB):
                 removed_rejected=removed,
                 duplicate_of=duplicates,
             )
+        # The TruLens tables are written through TruLens' own sessions, so this is
+        # a second transaction. It is idempotent; retry with sync_trulens_dataset().
+        try:
+            result.trulens_dataset = self.sync_trulens_dataset(vid)
+        except Exception as exc:
+            raise WorkflowError(
+                f"{result.dataset}@{result.version} is published, but writing the TruLens "
+                f"dataset failed: {exc}. Retry with Repository.sync_trulens_dataset() or "
+                "`trulens-pg bench sync-trulens`."
+            ) from exc
+        return result
 
     def deprecate_version(self, version_id: uuid.UUID | str) -> None:
         with self.transaction() as s:
@@ -916,8 +932,14 @@ class Repository(BenchDB):
             ]
         return pd.DataFrame(rows, columns=["external_id", "missing_context_id"])
 
-    def golden_set(self, version_id: uuid.UUID | str) -> list[dict[str, Any]]:
-        """Version items in the format of TruLens ``GroundTruthAgreement``."""
+    def ground_truth_rows(self, version_id: uuid.UUID | str) -> list[dict[str, Any]]:
+        """Items as TruLens ``GroundTruth`` fields (spec section 5).
+
+        ``query`` → ``query``, ``external_id`` → ``query_id``,
+        ``ground_truth_answer`` → ``expected_response``, the texts of the
+        ``ground_truth_context_ids`` chunks → ``expected_chunks``; split, tags,
+        difficulty, language, PII flag and metadata → ``meta``.
+        """
         version = self.get_version_by_id(version_id)
         frame = self.version_frame(version.version_id, include_pii=True)
         texts: dict[str, str] = {}
@@ -927,14 +949,53 @@ class Repository(BenchDB):
         return [
             {
                 "query": row["input"],
+                "query_id": row["external_id"],
                 "expected_response": row["ground_truth_output"],
                 "expected_chunks": [
-                    {"text": texts.get(cid, cid), "expect_score": 1}
+                    {"text": texts.get(cid, cid), "chunk_id": cid, "expect_score": 1}
                     for cid in row["ground_truth_context_ids"]
                 ],
+                "meta": {
+                    "split": row["split"],
+                    "tags": row["tags"],
+                    "difficulty": row["difficulty"],
+                    "language": row["language"],
+                    "contains_pii": row["contains_pii"],
+                    "metadata": row["metadata"],
+                },
             }
             for row in frame.to_dict(orient="records")
         ]
+
+    def golden_set(self, version_id: uuid.UUID | str) -> list[dict[str, Any]]:
+        """Version items in the format of TruLens ``GroundTruthAgreement``."""
+        return [
+            {k: row[k] for k in ("query", "expected_response", "expected_chunks")}
+            for row in self.ground_truth_rows(version_id)
+        ]
+
+    def sync_trulens_dataset(self, version_id: uuid.UUID | str) -> str:
+        """Write a published version as the TruLens dataset ``<dataset>@<version>``.
+
+        Idempotent: TruLens dataset and ground-truth ids are content hashes.
+        Returns the TruLens dataset name.
+        """
+        version = self.get_version_by_id(version_id)
+        if version.status not in m.FROZEN_STATUSES:
+            raise WorkflowError("Only published versions are written as TruLens datasets.")
+        name = trulens_dataset_name(version.dataset.name, version.version)
+        self.trulens.write_dataset(
+            name,
+            self.ground_truth_rows(version.version_id),
+            meta={
+                "source": "trulens-pg",
+                "bench_schema": self.bench_schema,
+                "dataset": version.dataset.name,
+                "version": version.version,
+                "content_hash": version.content_hash,
+            },
+        )
+        return name
 
     # ---------------------------------------------------------------------- runs
 

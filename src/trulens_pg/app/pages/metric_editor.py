@@ -17,10 +17,10 @@ from trulens_pg.metrics.build import (
     SELECTOR_NAMES,
     MetricDefinition,
     allowed_python_refs,
-    template_placeholders,
     validate_definition,
 )
 from trulens_pg.metrics.judges import PROVIDERS
+from trulens_pg.trulens_store import default_prompt_slug, make_resolved_prompt
 
 st.title("Metric editor")
 store = common.store()
@@ -51,20 +51,64 @@ defn = store.definition(row.metric_version_id)
 st.caption(f"Editing {defn.ref} · kind {defn.kind} · status {defn.status}")
 
 fields: dict[str, Any] = {}
+prompt_text: str | None = None
+prompt_slug: str | None = None
+candidate_prompt = defn.prompt
 if defn.kind == "llm_judge":
-    fields["prompt_template"] = st.text_area(
-        "Prompt template",
-        defn.prompt_template or "Question: {question}\n\nAnswer: {answer}\n\nContexts: {contexts}",
-        height=180,
-        help="Placeholders: plain names in braces, e.g. {question}, {answer}, {contexts}, "
-        "{ground_truth}. Write {{ and }} for literal braces.",
+    st.subheader("Judge prompt (TruLens prompt registry)")
+    if defn.prompt is not None:
+        st.caption(
+            f"Pinned: {defn.prompt.prompt.slug} · version {defn.prompt_version_id} "
+            "(a metric version pins an exact version, never a label)"
+        )
+    source = st.radio(
+        "Judge prompt",
+        ["Write a new prompt version", "Pick a version from the registry"],
+        horizontal=True,
     )
+    if source.startswith("Write"):
+        prompt_slug = st.text_input(
+            "Prompt slug",
+            defn.prompt.prompt.slug if defn.prompt is not None else default_prompt_slug(name),
+        )
+        prompt_text = st.text_area(
+            "Prompt text",
+            defn.prompt.version.text
+            if defn.prompt is not None and defn.prompt.version.text
+            else "Question: {{question}}\n\nAnswer: {{answer}}\n\nContexts: {{contexts}}",
+            height=180,
+            help="Placeholders use the TruLens syntax {{name}}, e.g. {{question}}, {{answer}}, "
+            "{{contexts}}, {{ground_truth}}. Saving creates a new prompt version only if the "
+            "text changed.",
+        )
+        try:
+            candidate_prompt = make_resolved_prompt(prompt_text, slug=prompt_slug)
+        except ValidationError as exc:
+            st.error(str(exc))
+            candidate_prompt = None
+    else:
+        with common.handled():
+            prompts = store.trulens.list_prompts()
+            if prompts.empty:
+                st.info("The registry has no prompts yet.")
+            else:
+                slugs = list(prompts["slug"])
+                current = defn.prompt.prompt.slug if defn.prompt is not None else slugs[0]
+                slug = st.selectbox(
+                    "Prompt", slugs, index=slugs.index(current) if current in slugs else 0
+                )
+                versions = store.trulens.list_prompt_versions(str(slug)).iloc[::-1]
+                labels = [
+                    f"{v.version_id} · {v.created_at} · {v.change_note or ''}"
+                    for v in versions.itertuples()
+                ]
+                pick = st.selectbox("Version", range(len(labels)), format_func=lambda i: labels[i])
+                version_id = str(versions.iloc[int(pick)].version_id)
+                candidate_prompt = store.trulens.resolve_prompt_version(version_id)
+                st.code(candidate_prompt.version.text or str(candidate_prompt.version.messages))
+                fields["prompt_version_id"] = version_id
     fields["rubric"] = st.text_area("Rubric", defn.rubric or "", height=140)
-    try:
-        placeholders = template_placeholders(fields["prompt_template"])
-    except ValidationError as exc:
-        st.error(str(exc))
-        placeholders = []
+    placeholders = list(candidate_prompt.version.variables) if candidate_prompt else []
 elif defn.kind == "criteria":
     methods = sorted(CRITERIA_METHODS)
     current = defn.params.get("method", methods[0])
@@ -156,9 +200,12 @@ if defn.kind == "llm_judge":
     except json.JSONDecodeError as exc:
         st.error(f"Invalid JSON: {exc}")
 
-candidate = MetricDefinition(
-    **{**defn.__dict__, **fields}  # type: ignore[arg-type]
-)
+candidate = MetricDefinition(**{**defn.__dict__, **fields})
+if defn.kind == "llm_judge":
+    candidate.prompt = candidate_prompt
+    candidate.prompt_version_id = (
+        candidate_prompt.version_id if candidate_prompt is not None else None
+    )
 problems = validate_definition(candidate)
 if problems:
     for problem in problems:
@@ -169,6 +216,12 @@ else:
 fields["changelog"] = st.text_input("Changelog", row.changelog or "")
 if st.button("Save draft", type="primary", disabled=not user.is_editor):
     common.run_write(
-        lambda: store.update_draft(row.metric_version_id, **fields),
+        lambda: store.update_draft(
+            row.metric_version_id,
+            prompt_text=prompt_text,
+            prompt_slug=prompt_slug,
+            updated_by=user.name,
+            **fields,
+        ),
         lambda d: f"Saved {d.ref} (1 row).",
     )

@@ -15,7 +15,6 @@ from __future__ import annotations
 import functools
 import inspect
 import math
-import string
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
@@ -102,23 +101,10 @@ def make_selector(name: str) -> Any:
 
 
 def template_placeholders(template: str) -> list[str]:
-    """Placeholder names in a template; raise for anything but plain names."""
-    names: list[str] = []
-    try:
-        parsed = list(string.Formatter().parse(template))
-    except ValueError as exc:
-        raise ValidationError(f"Invalid prompt template: {exc}") from exc
-    for _literal, field_name, format_spec, conversion in parsed:
-        if field_name is None:
-            continue
-        if not field_name.isidentifier() or format_spec or conversion:
-            raise ValidationError(
-                f"Placeholder {{{field_name}}} is not allowed: use plain names such as "
-                "{question}, {answer}, {contexts}, {ground_truth}."
-            )
-        if field_name not in names:
-            names.append(field_name)
-    return names
+    """Variables of a judge prompt (TruLens ``{{name}}`` placeholders only)."""
+    from trulens_pg.trulens_store import prompt_variables
+
+    return prompt_variables(template)
 
 
 @dataclass
@@ -130,7 +116,10 @@ class MetricDefinition:
     version: int | None = None
     description: str | None = None
     higher_is_better: bool = True
-    prompt_template: str | None = None
+    prompt_version_id: str | None = None
+    """Exact TruLens ``PromptVersion`` id of the judge prompt (``llm_judge``)."""
+    prompt: Any = None
+    """The loaded ``ResolvedPrompt`` of ``prompt_version_id`` (not stored in bench)."""
     rubric: str | None = None
     criteria: str | None = None
     score_min: int = 0
@@ -151,12 +140,8 @@ class MetricDefinition:
         """Inputs with defaults filled in per kind."""
         if self.inputs:
             return dict(self.inputs)
-        if self.kind == "llm_judge" and self.prompt_template:
-            return {
-                p: DEFAULT_INPUTS[p]
-                for p in template_placeholders(self.prompt_template)
-                if p in DEFAULT_INPUTS
-            }
+        if self.kind == "llm_judge" and self.prompt is not None:
+            return {p: DEFAULT_INPUTS[p] for p in self.prompt_variables() if p in DEFAULT_INPUTS}
         if self.kind == "criteria":
             method = self.params.get("method", "")
             return {a: CRITERIA_DEFAULT_INPUTS[a] for a in CRITERIA_METHODS.get(method, ())}
@@ -175,11 +160,20 @@ class MetricDefinition:
             }
         return {}
 
+    def prompt_variables(self) -> list[str]:
+        """Declared variables of the pinned prompt version."""
+        if self.prompt is None:
+            return []
+        return list(self.prompt.version.variables)
+
     def content(self) -> dict[str, Any]:
         """Fields that define the metric's behaviour (hashed on publish)."""
         return {
             "kind": self.kind,
-            "prompt_template": self.prompt_template,
+            "prompt_version_id": self.prompt_version_id,
+            "prompt_content_hash": getattr(
+                getattr(self.prompt, "version", None), "content_hash", None
+            ),
             "rubric": self.rubric,
             "criteria": self.criteria,
             "score_min": self.score_min,
@@ -211,16 +205,15 @@ def validate_definition(defn: MetricDefinition) -> list[str]:
         if sel not in SELECTOR_NAMES:
             errors.append(f"Input {arg!r} uses unknown selector {sel!r}.")
     if defn.kind == "llm_judge":
-        if not defn.prompt_template:
-            errors.append("llm_judge needs a prompt_template.")
+        if not defn.prompt_version_id:
+            errors.append("llm_judge needs a judge prompt version (prompt_version_id).")
+        elif defn.prompt is None:
+            errors.append(f"Prompt version {defn.prompt_version_id} is not loaded.")
         else:
-            try:
-                placeholders = template_placeholders(defn.prompt_template)
-            except ValidationError as exc:
-                errors.append(str(exc))
+            placeholders = defn.prompt_variables()
+            if not placeholders:
+                errors.append("The judge prompt has no {{variable}} placeholders.")
             else:
-                if not placeholders:
-                    errors.append("The prompt template has no placeholders.")
                 missing = [p for p in placeholders if p not in inputs]
                 if missing:
                     errors.append(f"Placeholder(s) without a mapped input: {missing}.")
@@ -294,23 +287,36 @@ def render_system_prompt(defn: MetricDefinition) -> str:
     return "\n\n".join(parts)
 
 
-def render_user_prompt(template: str, values: Mapping[str, Any]) -> str:
-    """Fill the template; values are converted to text first."""
-    names = template_placeholders(template)
-    return template.format_map({n: _text(values.get(n)) for n in names})
+def render_prompts(prompt: Any, system_prompt: str, values: Mapping[str, Any]) -> tuple[str, str]:
+    """Render the pinned prompt version locally (no model call).
+
+    Returns ``(system prompt, user prompt)``: a text prompt becomes the user
+    prompt; for a chat prompt, system messages extend the system prompt and the
+    other messages form the user prompt.
+    """
+    names = list(prompt.version.variables)
+    rendered = prompt.render(strict=False, **{n: _text(values.get(n)) for n in names})
+    if rendered.text is not None:
+        return system_prompt, rendered.text
+    system_parts: list[str] = [system_prompt]
+    user_parts: list[str] = []
+    for message in rendered.messages or []:
+        target = system_parts if message.get("role") == "system" else user_parts
+        target.append(str(message.get("content", "")))
+    return "\n\n".join(system_parts), "\n\n".join(user_parts)
 
 
 def _llm_judge_impl(
     defn: MetricDefinition, judge: Any, info: Mapping[str, Any]
 ) -> Callable[..., Any]:
-    assert defn.prompt_template is not None
-    template = defn.prompt_template
-    system_prompt = render_system_prompt(defn)
-    params = template_placeholders(template)
+    assert defn.prompt is not None
+    prompt = defn.prompt
+    base_system_prompt = render_system_prompt(defn)
+    params = defn.prompt_variables()
     temperature = float(info.get("temperature") or 0.0)
 
     def implementation(**kwargs: Any) -> tuple[float, dict[str, Any]]:
-        user_prompt = render_user_prompt(template, kwargs)
+        system_prompt, user_prompt = render_prompts(prompt, base_system_prompt, kwargs)
         score, reasons = judge.generate_score_and_reasons(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -323,6 +329,7 @@ def _llm_judge_impl(
             {
                 "metric": defn.name,
                 "metric_version": defn.version,
+                "prompt_version_id": defn.prompt_version_id,
                 "judge_provider": info.get("provider"),
                 "judge_model": info.get("model"),
                 "judge_temperature": temperature,

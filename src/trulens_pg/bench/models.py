@@ -221,7 +221,8 @@ class MetricVersion(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
-    prompt_template: Mapped[str | None] = mapped_column(Text)
+    prompt_version_id: Mapped[str | None] = mapped_column(Text)
+    """Exact TruLens ``PromptVersion`` id of the judge prompt (``llm_judge`` only)."""
     rubric: Mapped[str | None] = mapped_column(Text)
     criteria: Mapped[str | None] = mapped_column(Text)
     score_min: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

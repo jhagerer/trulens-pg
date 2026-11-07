@@ -106,3 +106,54 @@ def test_metric_constructor_arguments() -> None:
     for name in ("implementation", "criteria", "min_score_val", "max_score_val", "description"):
         assert name in params
     assert "higher_is_better" in Metric.model_fields
+
+
+def test_prompt_registry_api() -> None:
+    """Judge prompts (spec section 4.5) use the TruLens prompt registry (TruLens >= 2.14)."""
+    from trulens.core import prompt as core_prompt
+    from trulens.core.schema import prompt as prompt_schema
+
+    assert prompt_schema.VARIABLE_PATTERN.pattern == r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}"
+    assert callable(prompt_schema.validate_template)
+    for name, params in {
+        "create_prompt": ["db", "slug", "name", "prompt_type", "description", "tags"],
+        "create_prompt_version": ["db", "prompt", "text", "messages", "variables"],
+        "resolve_prompt": ["db", "prompt", "label", "version_id"],
+        "as_prompt": ["db", "prompt"],
+    }.items():
+        sig = list(inspect.signature(getattr(core_prompt, name)).parameters)
+        assert sig[: len(params)] == params, name
+    render = inspect.signature(prompt_schema.ResolvedPrompt.render).parameters
+    assert "strict" in render
+
+
+def test_dataset_api() -> None:
+    """Published versions become TruLens datasets; traces are curated (spec sections 5, 6.1)."""
+    from trulens.core import dataset as core_dataset
+    from trulens.core.database.sqlalchemy import SQLAlchemyDB
+    from trulens.core.schema.groundtruth import GroundTruth
+
+    gt_params = inspect.signature(GroundTruth.__init__).parameters
+    for name in ("dataset_id", "query", "query_id", "expected_response", "expected_chunks", "meta"):
+        assert name in gt_params, name
+    for method in (
+        "insert_dataset",
+        "batch_insert_ground_truth",
+        "get_ground_truths_by_dataset",
+        "get_prompt",
+        "get_prompt_version",
+        "get_prompts",
+        "get_prompt_versions",
+    ):
+        assert hasattr(SQLAlchemyDB, method), method
+    curate = inspect.signature(core_dataset.curate_records_to_dataset).parameters
+    for name in ("dataset_name", "records", "db", "mapping", "on_error"):
+        assert name in curate, name
+    assert set(core_dataset.TraceDatasetMapping.model_fields) >= {
+        "query",
+        "query_id",
+        "expected_response",
+        "expected_chunks",
+        "metadata",
+    }
+    assert core_dataset.PROVENANCE_COLUMNS["source_app_name"] == "app_name"

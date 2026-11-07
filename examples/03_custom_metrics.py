@@ -30,7 +30,9 @@ except ValidationError:
 
 citation = store.create_draft(
     "policy_citation",
-    prompt_template="Question: {question}\n\nAnswer: {answer}",
+    # Stored as a version of the TruLens prompt "trulens-pg.policy_citation" (Prompts tab);
+    # the metric version pins that exact prompt version.
+    prompt_text="Question: {{question}}\n\nAnswer: {{answer}}",
     rubric="3: the answer names the clause number it relies on.\n0: no clause number.",
     score_min=0,
     score_max=3,
@@ -72,3 +74,5 @@ run = tru_app.add_run(
 run.start()
 print(tpg.compute_metrics(run, [set_name], judge=judge))
 print(session.get_leaderboard())
+print(f"Judge prompt version: {citation.prompt_version_id}")
+print(session.get_ground_truth("claims_faq@1.0.0").head(3))  # written on publish

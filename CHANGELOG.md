@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+Changes for the updated specification (2026-11-07):
+
+- Judge prompts of `llm_judge` metrics live in the TruLens prompt registry. Migration `0002`
+  replaces `metric_version.prompt_template` with `prompt_version_id` (an exact
+  `PromptVersion`, never a label); placeholders use the TruLens syntax `{{name}}` and are
+  rendered locally. `MetricStore.create_draft(prompt_text=...)` creates the prompt version.
+- Publishing a benchmark version also writes the TruLens dataset `<dataset>@<version>`
+  (`Dataset` plus `GroundTruth` rows); new `Repository.sync_trulens_dataset()` and CLI
+  `trulens-pg bench sync-trulens`.
+- Import page: new source "Production traces", converted with TruLens
+  `curate_records_to_dataset` and copied with provenance into a draft.
+- Metric editor: write a new prompt version or pick one from the registry; the publish diff
+  shows the prompt text.
+- Contract tests cover the TruLens prompt, dataset and curation APIs.
+
 First implementation of the specification "trulens-pg: Postgres-compatible TruLens evaluation
 and benchmark management" (v0.1, 2026-11-06).
 

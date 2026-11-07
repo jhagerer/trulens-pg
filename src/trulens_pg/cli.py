@@ -148,6 +148,7 @@ def cmd_bench_import(args: argparse.Namespace) -> int:
             f"Published {result.dataset}@{result.version} "
             f"({result.item_count} items) as {result.view}."
         )
+        print(f"Wrote the TruLens dataset {result.trulens_dataset}.")
         if result.duplicate_of:
             print(f"Warning: same content as version(s) {result.duplicate_of}.")
     return 0
@@ -167,6 +168,21 @@ def cmd_bench_import_corpus(args: argparse.Namespace) -> int:
     records = [{str(k): v for k, v in r.items()} for r in df[keep].to_dict(orient="records")]
     n = repo.add_documents(args.corpus, records)
     print(f"Wrote {n} document(s) to corpus {args.corpus}.")
+    return 0
+
+
+def cmd_bench_sync_trulens(args: argparse.Namespace) -> int:
+    repo = _repo(args)
+    names = []
+    if args.source:
+        names.append(repo.sync_trulens_dataset(repo.resolve_source(args.source).version_id))
+    else:
+        datasets = repo.list_datasets()
+        for dataset in [] if datasets.empty else datasets["name"]:
+            for row in repo.list_versions(str(dataset)).itertuples():
+                if row.status in ("published", "deprecated"):
+                    names.append(repo.sync_trulens_dataset(str(row.version_id)))
+    print(f"Wrote {len(names)} TruLens dataset(s): {', '.join(names) or '-'}.")
     return 0
 
 
@@ -282,6 +298,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--format", choices=["csv", "jsonl", "parquet"])
     p.add_argument("--map", action="append", default=[], help="field=column, repeatable")
     p.set_defaults(func=cmd_bench_import_corpus)
+
+    p = bench.add_parser(
+        "sync-trulens",
+        parents=[common],
+        help="write published versions as TruLens datasets <dataset>@<version>",
+    )
+    p.add_argument("source", nargs="?", help="<dataset>@<version>; default: all published")
+    p.set_defaults(func=cmd_bench_sync_trulens)
 
     p = bench.add_parser("export", parents=[common], help="export a version")
     p.add_argument("source", help="<dataset>@<version> or bench:<dataset>@<version>")
