@@ -149,6 +149,49 @@ run.compute_metrics([gold_agreement])
 print(session.get_leaderboard())
 ```
 
+**Evaluate retrieval and other intermediate steps.** `instrument_method` records methods of
+your agent as trace spans without changing its code; call it before `tpg.wrap(...)`. Metrics
+then select these spans. The example assumes `agent.retrieve(query)` returns a list of text
+chunks and `agent.rewrite_query(question)` returns a string.
+
+```python
+from trulens.core.otel.instrument import instrument_method
+
+# Before tpg.wrap(...): record the steps of every agent call
+instrument_method(
+    type(agent),
+    "retrieve",
+    span_type=SpanAttributes.SpanType.RETRIEVAL,
+    attributes={
+        SpanAttributes.RETRIEVAL.QUERY_TEXT: "query",
+        SpanAttributes.RETRIEVAL.RETRIEVED_CONTEXTS: "return",
+    },
+)
+instrument_method(type(agent), "rewrite_query")  # any other step
+
+# After run.start(): one metric per step
+context_relevance = Metric(  # is each retrieved chunk relevant to the question?
+    implementation=judge.context_relevance,
+    name="context_relevance",
+    selectors={
+        "question": Selector.select_record_input(),
+        "context": Selector.select_context(collect_list=False),
+    },
+)
+rewrite_quality = Metric(  # does the rewritten query keep the meaning of the question?
+    implementation=lambda question, rewritten: judge.generate_score(
+        system_prompt=f"Rate from 0 to 10 how well this search query keeps the meaning of: {question}",
+        user_prompt=rewritten,
+    ),
+    name="rewrite_quality",
+    selectors={
+        "question": Selector.select_record_input(),
+        "rewritten": Selector(function_name="rewrite_query", function_attribute="return"),
+    },
+)
+run.compute_metrics([context_relevance, rewrite_quality])
+```
+
 ## Install
 
 ```bash
