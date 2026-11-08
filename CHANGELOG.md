@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Renamed `tpg.wrap()` to `tpg.TruApp()`: a subclass of the TruLens `TruApp` with the same
+  arguments; `connector` defaults to the `connect()` session and `PgRunDao` is installed.
+
 - Reduced trulens-pg to the two Run API gaps on Postgres: `connect()`, `wrap()`/`attach()`
   (run backend without `connector=`) and `source_type="TABLE"` for Postgres tables and views.
 - Removed the custom metric store (metric definitions, judge prompts, calibration, metric

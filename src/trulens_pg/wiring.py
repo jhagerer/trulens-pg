@@ -1,4 +1,4 @@
-"""`wrap()` and `attach()`: install the Postgres run backend on a TruLens app (closes G1).
+"""`TruApp` and `attach()`: install the Postgres run backend on a TruLens app (closes G1).
 
 TruLens 2.16 sets ``App.run_dao`` only when ``connector=`` is passed to the app
 constructor; otherwise ``add_run()`` raises ``ValueError: Run DAO not
@@ -9,8 +9,10 @@ identifiers (``_object_name``, ``_object_type``, ``_object_version``) that
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from typing import Any
+
+from trulens.apps.app import TruApp as _NativeTruApp
 
 from trulens_pg.dao import PgRunDao
 from trulens_pg.session import PgContext, get_context
@@ -38,32 +40,19 @@ def attach(tru_app: Any, *, context: PgContext | None = None) -> Any:
     return tru_app
 
 
-def wrap(
-    app: Any,
-    *,
-    app_name: str,
-    app_version: str,
-    main_method: Callable[..., Any] | None = None,
-    feedbacks: Iterable[Any] | None = None,
-    context: PgContext | None = None,
-    **kwargs: Any,
-) -> Any:
-    """Create a ``TruApp`` that uses the Postgres session and run backend.
+class TruApp(_NativeTruApp):  # type: ignore[misc]
+    """The TruLens ``TruApp`` with the Postgres session and run backend.
 
-    Equivalent to ``TruApp(app, ..., connector=session.connector)`` followed by
-    `attach()`.
+    Takes the same arguments as ``trulens.apps.app.TruApp``. ``connector`` defaults
+    to the connector of the `connect()` session, and `PgRunDao` is installed, so
+    ``add_run()`` works on Postgres.
+
+    Example:
+        ``tpg.TruApp(rag, app_name="claims_rag", app_version="v1", main_method=rag.answer)``
     """
-    from trulens.apps.app import TruApp
 
-    ctx = context or get_context()
-    if main_method is not None:
-        kwargs["main_method"] = main_method
-    tru_app = TruApp(
-        app,
-        app_name=app_name,
-        app_version=app_version,
-        feedbacks=list(feedbacks) if feedbacks is not None else None,
-        connector=ctx.session.connector,
-        **kwargs,
-    )
-    return attach(tru_app, context=ctx)
+    def __init__(self, app: Any, main_method: Callable[..., Any] | None = None, **kwargs: Any):
+        ctx = get_context()
+        kwargs.setdefault("connector", ctx.session.connector)
+        super().__init__(app, main_method=main_method, **kwargs)
+        attach(self, context=ctx)

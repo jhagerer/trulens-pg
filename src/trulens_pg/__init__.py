@@ -6,7 +6,7 @@ Quickstart::
     from trulens.core.run import RunConfig
 
     session = tpg.connect("postgresql+psycopg://user@host/evals")
-    tru_app = tpg.wrap(rag, app_name="claims_rag", app_version="v3", main_method=rag.answer)
+    tru_app = tpg.TruApp(rag, app_name="claims_rag", app_version="v3", main_method=rag.answer)
     run = tru_app.add_run(
         RunConfig(
             run_name="v3_test",
@@ -27,7 +27,7 @@ from trulens_pg.errors import (
     UnsupportedDatabaseError,
 )
 from trulens_pg.session import connect, get_context
-from trulens_pg.wiring import attach, wrap
+from trulens_pg.wiring import TruApp, attach
 
 try:
     from trulens_pg._version import __version__
@@ -38,11 +38,11 @@ __all__ = [
     "NotConnectedError",
     "PgRunDao",
     "SourceError",
+    "TruApp",
     "TrulensPgError",
     "UnsupportedDatabaseError",
     "__version__",
     "attach",
     "connect",
     "get_context",
-    "wrap",
 ]

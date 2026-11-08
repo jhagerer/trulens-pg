@@ -58,7 +58,7 @@ def _unique(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
-def test_g1_plain_truapp_fails_and_wrap_fixes_it(ctx: Any) -> None:
+def test_g1_plain_truapp_fails_and_tpg_truapp_fixes_it(ctx: Any) -> None:
     rag = ClaimsRag()
     plain = TruApp(rag, app_name=_unique("plain"), app_version="v1", main_method=rag.answer)
     with pytest.raises(ValueError, match="Run DAO not initialized"):
@@ -67,7 +67,9 @@ def test_g1_plain_truapp_fails_and_wrap_fixes_it(ctx: Any) -> None:
     attached = tpg.attach(plain)
     assert isinstance(attached.run_dao, tpg.PgRunDao)
 
-    tru_app = tpg.wrap(rag, app_name=_unique("claims"), app_version="v1", main_method=rag.answer)
+    tru_app = tpg.TruApp(rag, app_name=_unique("claims"), app_version="v1", main_method=rag.answer)
+    assert isinstance(tru_app, TruApp)  # a native TruLens TruApp
+    assert isinstance(tru_app.run_dao, tpg.PgRunDao)
     run = tru_app.add_run(
         RunConfig(run_name=_unique("run"), dataset_name="inline", dataset_spec={"input": "input"})
     )
@@ -108,7 +110,7 @@ def test_g2_table_source_and_column_check(ctx: Any) -> None:
             )
         )
     rag = ClaimsRag()
-    tru_app = tpg.wrap(rag, app_name=_unique("claims"), app_version="v1", main_method=rag.answer)
+    tru_app = tpg.TruApp(rag, app_name=_unique("claims"), app_version="v1", main_method=rag.answer)
 
     with pytest.raises(SourceError, match="lacks column"):
         tru_app.add_run(
@@ -163,7 +165,7 @@ def test_log_ingestion_from_table(ctx: Any) -> None:
                 "('q1', 'a1 KFZ-1001', '{ctx a,ctx b}'), ('q2', 'a2', '{ctx c}')"
             )
         )
-    tru_app = tpg.wrap(None, app_name=_unique("logged_app"), app_version="v1")
+    tru_app = tpg.TruApp(None, app_name=_unique("logged_app"), app_version="v1")
     run = tru_app.add_run(
         RunConfig(
             run_name=_unique("run"),
@@ -214,7 +216,7 @@ def test_metric_reads_ground_truth_from_the_table_run(ctx: Any, claims_table: st
         },
     )
     rag = ClaimsRag()
-    tru_app = tpg.wrap(rag, app_name=_unique("claims"), app_version="v1", main_method=rag.answer)
+    tru_app = tpg.TruApp(rag, app_name=_unique("claims"), app_version="v1", main_method=rag.answer)
     run_name = _unique("gold")
     run = tru_app.add_run(
         RunConfig(

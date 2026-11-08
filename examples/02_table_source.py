@@ -39,7 +39,7 @@ items.to_sql(
 )
 
 rag = ClaimsRag()
-tru_app = tpg.wrap(rag, app_name="claims_rag", app_version="v1", main_method=rag.answer)
+tru_app = tpg.TruApp(rag, app_name="claims_rag", app_version="v1", main_method=rag.answer)
 run = tru_app.add_run(
     RunConfig(
         run_name="v1_test_split",

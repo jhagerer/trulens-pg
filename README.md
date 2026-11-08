@@ -9,7 +9,7 @@ TruLens code.
 
 | On Postgres with TruLens 2.16 | With trulens-pg |
 |---|---|
-| `add_run()` raises `ValueError: Run DAO not initialized` unless the app gets `connector=` | `tpg.wrap()` / `tpg.attach()` install the run backend |
+| `add_run()` raises `ValueError: Run DAO not initialized` unless the app gets `connector=` | `tpg.TruApp()` / `tpg.attach()` install the run backend |
 | `source_type="TABLE"` fails: `NotImplementedError: Source table fetch not supported by this DAO` | Runs read tables and views from Postgres |
 
 ## What trulens-pg does
@@ -27,8 +27,8 @@ session = tpg.connect("postgresql+psycopg://user:password@host/evals")
 **2. Use the Run API without `connector=`.**
 
 ```python
-tru_app = tpg.wrap(rag, app_name="claims_rag", app_version="v1", main_method=rag.answer)
-# or for an existing TruApp, TruChain, TruGraph or TruLlama: tpg.attach(tru_chain)
+tru_app = tpg.TruApp(rag, app_name="claims_rag", app_version="v1", main_method=rag.answer)
+# same arguments as trulens.apps.app.TruApp; for an existing TruChain, TruGraph or TruLlama: tpg.attach(tru_chain)
 run = tru_app.add_run(
     RunConfig(run_name="smoke", dataset_name="inline", dataset_spec={"input": "input"})
 )
@@ -76,7 +76,7 @@ mode; array and JSONB columns arrive as Python lists.
 ```python
 from trulens.core.enums import Mode
 
-logged = tpg.wrap(None, app_name="prod_logs", app_version="2026-11")
+logged = tpg.TruApp(None, app_name="prod_logs", app_version="2026-11")
 run = logged.add_run(
     RunConfig(
         run_name="nov_logs",
@@ -118,7 +118,7 @@ questions[["question_id", "question_type", "question", "gold_answer"]].to_sql(
 )
 
 # Run the agent on all 500 questions
-tru_app = tpg.wrap(agent, app_name="my_agent", app_version="v1", main_method=agent.answer)
+tru_app = tpg.TruApp(agent, app_name="my_agent", app_version="v1", main_method=agent.answer)
 run = tru_app.add_run(
     RunConfig(
         run_name="erb_v1",
@@ -150,14 +150,14 @@ print(session.get_leaderboard())
 ```
 
 **Evaluate retrieval and other intermediate steps.** `instrument_method` records methods of
-your agent as trace spans without changing its code; call it before `tpg.wrap(...)`. Metrics
+your agent as trace spans without changing its code; call it before `tpg.TruApp(...)`. Metrics
 then select these spans. The example assumes `agent.retrieve(query)` returns a list of text
 chunks and `agent.rewrite_query(question)` returns a string.
 
 ```python
 from trulens.core.otel.instrument import instrument_method
 
-# Before tpg.wrap(...): record the steps of every agent call
+# Before tpg.TruApp(...): record the steps of every agent call
 instrument_method(
     type(agent),
     "retrieve",
@@ -220,8 +220,8 @@ python 02_table_source.py  # loads the questions into eval.claims_faq, runs and 
 | Function | Behaviour |
 |---|---|
 | `connect(database_url=None, **session_kwargs)` | Creates the `TruSession` (URL default: `TRULENS_PG_DATABASE_URL`); `postgresql://` becomes `postgresql+psycopg://`; asynchronous drivers are rejected. |
-| `wrap(app, *, app_name, app_version, main_method=None, feedbacks=None, **kw)` | `TruApp(..., connector=session.connector)` plus `PgRunDao`. |
-| `attach(tru_app)` | Installs `PgRunDao` on an existing `TruApp`, `TruChain`, `TruGraph` or `TruLlama`. |
+| `TruApp(app, main_method=None, **kwargs)` | The TruLens `TruApp` (same arguments, subclass of `trulens.apps.app.TruApp`); `connector` defaults to the `connect()` session, and `PgRunDao` is installed. |
+| `attach(tru_app)` | Installs `PgRunDao` on an existing TruLens app (`TruApp`, `TruChain`, `TruGraph`, `TruLlama`). |
 | `PgRunDao` | The TruLens `DefaultRunDao` plus `fetch_source_data()` for Postgres tables and views. |
 
 ### Run sources

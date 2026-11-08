@@ -43,7 +43,7 @@ def normalize_database_url(database_url: str | URL) -> URL:
 
 @dataclass
 class PgContext:
-    """State shared by `wrap()`, `attach()` and `PgRunDao`."""
+    """State shared by `TruApp`, `attach()` and `PgRunDao`."""
 
     session: Any
     engine: Engine
