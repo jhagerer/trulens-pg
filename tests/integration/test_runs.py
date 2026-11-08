@@ -1,7 +1,8 @@
-"""End-to-end tests of the Run API on Postgres (G1, G2, stored metrics)."""
+"""End-to-end tests of the TruLens Run API on Postgres (G1, G2)."""
 
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Any
 
@@ -9,12 +10,12 @@ import pandas as pd
 import pytest
 from sqlalchemy import text
 from trulens.apps.app import TruApp
+from trulens.core import Metric, Selector
 from trulens.core.otel.instrument import instrument
 from trulens.core.run import RunConfig
 from trulens.otel.semconv.trace import SpanAttributes
 
 import trulens_pg as tpg
-from tests.conftest import GOLDEN_SET
 from trulens_pg.errors import SourceError
 
 pytestmark = pytest.mark.pg
@@ -41,6 +42,18 @@ class ClaimsRag:
         return "Not covered."
 
 
+def wait_for_invocation(run: Any, timeout: float = 60.0) -> str:
+    """Poll until the invocation is complete (the documented TruLens pattern)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        status = run.get_status().name
+        if status.startswith("INVOCATION_COMPLETED") or status == "COMPLETED":
+            return str(status)
+        if time.monotonic() > deadline:
+            raise TimeoutError(status)
+        time.sleep(0.5)
+
+
 def _unique(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
@@ -59,7 +72,7 @@ def test_g1_plain_truapp_fails_and_wrap_fixes_it(ctx: Any) -> None:
         RunConfig(run_name=_unique("run"), dataset_name="inline", dataset_spec={"input": "input"})
     )
     run.start(input_df=pd.DataFrame({"input": ["motor glass damage?", "home flood?"]}))
-    tpg.metrics.resolve.wait_for_invocation(run, timeout=60, poll_interval=0.5)
+    wait_for_invocation(run)
 
     def length(answer: str) -> float:
         return min(len(answer) / 100, 1.0)
@@ -69,7 +82,7 @@ def test_g1_plain_truapp_fails_and_wrap_fixes_it(ctx: Any) -> None:
     metric = Metric(
         implementation=length, name="length", selectors={"answer": Selector.select_record_output()}
     )
-    tpg.compute_metrics(run, [metric], timeout=60, poll_interval=0.5)
+    run.compute_metrics([metric])
     records, metrics = ctx.session.get_records_and_feedback(
         app_name=tru_app.app_name, run_name=run.run_name
     )
@@ -129,7 +142,7 @@ def test_g2_table_source_and_column_check(ctx: Any) -> None:
         )
     )
     run.start()  # no input_df: read through PgRunDao.fetch_source_data
-    status = tpg.metrics.resolve.wait_for_invocation(run, timeout=60, poll_interval=0.5)
+    status = wait_for_invocation(run)
     assert status == "INVOCATION_COMPLETED"
 
 
@@ -174,7 +187,7 @@ def test_log_ingestion_from_table(ctx: Any) -> None:
         name="n_contexts",
         selectors={"contexts": Selector.select_context(collect_list=True)},
     )
-    tpg.compute_metrics(run, [metric], timeout=60, poll_interval=0.5)
+    run.compute_metrics([metric])
     records, metrics = ctx.session.get_records_and_feedback(
         app_name=tru_app.app_name, run_name=run.run_name
     )
@@ -182,82 +195,43 @@ def test_log_ingestion_from_table(ctx: Any) -> None:
     assert sorted(records["n_contexts"]) == [0.5, 1.0]
 
 
-def test_table_source_with_stored_metrics(
-    ctx: Any, store: Any, claims_table: str, fake_judge: Any
-) -> None:
-    # Stored metrics: a deterministic python_ref, a calibrated llm_judge, an IR metric.
-    store.create_metric("has_policy_number", "python_ref", description="Cites a policy number")
-    ref = store.create_draft("has_policy_number", python_ref="contains_policy_number")
-    store.publish(ref.metric_version_id, published_by="tester")
+def test_metric_reads_ground_truth_from_the_table_run(ctx: Any, claims_table: str) -> None:
+    """Ground truth comes from the run's table via dataset_spec; no second dataset is passed."""
 
-    store.create_metric("policy_citation", "llm_judge")
-    draft = store.create_draft(
-        "policy_citation",
-        prompt_text="Question: {{question}}\nAnswer: {{answer}}",
-        rubric="3 if the answer cites a clause number, 0 otherwise.",
-        judge={"provider": "openai", "model": "gpt-4o-mini"},
-    )
-    store.add_labels(
-        "policy_citation",
-        [
-            {"question": "q1", "answer": "See KFZ-1001", "human_score": 3},
-            {"question": "q2", "answer": "No idea", "human_score": 0},
-            {"question": "q3", "answer": "KFZ-1002 applies", "human_score": 3},
-        ],
-    )
-    cal = store.calibrate(draft.metric_version_id, fake_judge)
-    assert cal.n_labels == 3
-    assert cal.spearman == pytest.approx(1.0)
-    store.publish(draft.metric_version_id, published_by="tester", min_labels=3)
-    store.create_metric("context_recall_at_2", "ground_truth")
-    gt = store.create_draft("context_recall_at_2", params={"method": "recall_at_k", "k": 2})
-    store.publish(gt.metric_version_id, published_by="tester")
-    store.create_metric_set(
-        "claims-rag-v1", ["has_policy_number@1", "policy_citation@1", "context_recall_at_2@1"]
-    )
+    def cites_gold_clause(answer: str, gold: str) -> float:
+        clause = gold.rsplit("clause ", maxsplit=1)[-1].rstrip(".")
+        return 1.0 if clause in answer else 0.0
 
+    gold_metric = Metric(
+        implementation=cites_gold_clause,
+        name="cites_gold_clause",
+        selectors={
+            "answer": Selector.select_record_output(),
+            "gold": Selector(
+                span_type=SpanAttributes.SpanType.RECORD_ROOT,
+                span_attribute=SpanAttributes.RECORD_ROOT.GROUND_TRUTH_OUTPUT,
+            ),
+        },
+    )
     rag = ClaimsRag()
-    tru_app = tpg.wrap(rag, app_name=_unique("claims"), app_version="v3", main_method=rag.answer)
-    run_name = _unique("v3_test")
+    tru_app = tpg.wrap(rag, app_name=_unique("claims"), app_version="v1", main_method=rag.answer)
+    run_name = _unique("gold")
     run = tru_app.add_run(
         RunConfig(
             run_name=run_name,
             dataset_name=f"{claims_table}?split=test",
             source_type="TABLE",
             dataset_spec={"input": "question", "ground_truth_output": "answer"},
-            llm_judge_name="fake-judge-1",
         )
     )
     run.start()
-    tpg.compute_metrics(
-        run,
-        ["claims-rag-v1"],
-        judge=fake_judge,
-        golden_set=pd.DataFrame(GOLDEN_SET),
-        timeout=60,
-        poll_interval=0.5,
-    )
+    assert wait_for_invocation(run) == "INVOCATION_COMPLETED"
+    run.compute_metrics([gold_metric])
 
     records, metrics = ctx.session.get_records_and_feedback(
         app_name=tru_app.app_name, run_name=run_name
     )
-    assert set(metrics) == {"has_policy_number@1", "policy_citation@1", "context_recall_at_2@1"}
+    assert metrics == ["cites_gold_clause"]
     assert len(records) == 3  # split=test: items 1, 3, 5
-    assert records["has_policy_number@1"].mean() == pytest.approx(1.0)
-    # Golden chunks of items 1, 3, 5 are c1, c0, c2; ClaimsRag retrieves c1 and c0.
-    assert records["context_recall_at_2@1"].mean() == pytest.approx(2 / 3)
-
-    used = store.run_metrics(run_name, tru_app.app_name)
-    assert sorted(used["name"]) == ["context_recall_at_2", "has_policy_number", "policy_citation"]
-    assert set(used["judge_model"].dropna()) == {"fakejudge:fake-judge-1"}
-
-
-def test_ground_truth_metric_needs_golden_set(ctx: Any, store: Any) -> None:
-    from trulens_pg.errors import MetricResolutionError
-
-    store.create_metric("recall", "ground_truth")
-    gt = store.create_draft("recall", params={"method": "recall_at_k", "k": 2})
-    store.publish(gt.metric_version_id, published_by="tester")
-    with pytest.raises(MetricResolutionError, match="golden_set"):
-        tpg.resolve_metrics(["recall"], store=store)
-    assert len(tpg.resolve_metrics(["recall"], store=store, golden_set=GOLDEN_SET)) == 1
+    # ClaimsRag always cites KFZ-1001, the gold clause of item 1 only.
+    assert sorted(records["cites_gold_clause"]) == [0.0, 0.0, 1.0]

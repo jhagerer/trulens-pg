@@ -2096,10 +2096,8 @@ wheels = [
 name = "trulens-pg"
 source = { editable = "." }
 dependencies = [
-    { name = "alembic" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary"] },
-    { name = "pydantic" },
     { name = "sqlalchemy" },
     { name = "trulens-core" },
     { name = "trulens-feedback" },
@@ -2128,11 +2126,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", specifier = ">=1.13" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
     { name = "psycopg2-binary", marker = "extra == 'psycopg2'", specifier = ">=2.9" },
-    { name = "pydantic", specifier = ">=2" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "trulens-core", specifier = ">=2.16,<2.17" },
     { name = "trulens-feedback", specifier = ">=2.16,<2.17" },

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Reduced trulens-pg to the two Run API gaps on Postgres: `connect()`, `wrap()`/`attach()`
+  (run backend without `connector=`) and `source_type="TABLE"` for Postgres tables and views.
+- Removed the custom metric store (metric definitions, judge prompts, calibration, metric
+  sets, `resolve_metrics`, `compute_metrics`), its schema and migrations, and the
+  `trulens-pg` command. Metrics are plain TruLens `Metric` objects passed to
+  `run.compute_metrics()`; ground truth comes from the run's table through `dataset_spec`
+  (`ground_truth_output`), not from a second dataset.
+- Removed the dependencies `alembic` and `pydantic`.
+
+
 - Removed the benchmark store: `Repository`, dataset versions, items, corpus, review, run
   links, `bench:<dataset>@<version>` sources, file import and export, trace import, TruLens
   dataset sync and the `trulens-pg bench` commands. Benchmarks are plain Postgres tables or

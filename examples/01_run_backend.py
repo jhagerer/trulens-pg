@@ -13,7 +13,7 @@ from trulens.core.run import RunConfig
 
 import trulens_pg as tpg
 
-session = tpg.connect(migrate=True)  # URL from TRULENS_PG_DATABASE_URL
+session = tpg.connect()  # URL from TRULENS_PG_DATABASE_URL
 rag = ClaimsRag()
 tru_app = tpg.wrap(rag, app_name="claims_rag", app_version="v1", main_method=rag.answer)
 
@@ -36,5 +36,5 @@ metric = Metric(
     name="cites_clause",
     selectors={"answer": Selector.select_record_output()},
 )
-print(tpg.compute_metrics(run, [metric]))
+print(run.compute_metrics([metric]))  # the TruLens Run API
 print(session.get_leaderboard())

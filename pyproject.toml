@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "trulens-pg"
 dynamic = ["version"]
-description = "Postgres-compatible TruLens evaluation with stored custom metrics"
+description = "The TruLens Run API on PostgreSQL, with Postgres tables as run sources"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.14"
 authors = [{ name = "Johann Hagerer" }]
-keywords = ["trulens", "postgres", "rag", "evaluation", "llm-judge"]
+keywords = ["trulens", "postgres", "rag", "evaluation"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -31,22 +31,12 @@ dependencies = [
   "sqlalchemy>=2.0",
   "psycopg[binary]>=3.1",
   "pandas>=2.0",
-  "alembic>=1.13",
-  "pydantic>=2",
 ]
 
 [project.optional-dependencies]
 openai = ["trulens-providers-openai>=2.16,<2.17"]
 litellm = ["trulens-providers-litellm>=2.16,<2.17"]
 psycopg2 = ["psycopg2-binary>=2.9"]
-
-[project.scripts]
-trulens-pg = "trulens_pg.cli:main"
-
-[project.entry-points."trulens_pg.metrics"]
-# Allow-list for python_ref metrics. Other installed packages add their own entries.
-contains_policy_number = "trulens_pg.metrics.examples:contains_policy_number"
-answer_length_ok = "trulens_pg.metrics.examples:answer_length_ok"
 
 [project.urls]
 Homepage = "https://github.com/jhagerer/trulens-pg"
@@ -103,7 +93,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "PLR", "N802"]
-"src/trulens_pg/migrations/**" = ["N999"]
 "examples/**" = ["S", "T20"]
 
 [tool.ruff.lint.isort]

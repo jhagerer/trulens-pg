@@ -1,21 +1,21 @@
-"""`connect()`: TruSession on Postgres, driver check and trulens_pg schema check."""
+"""`connect()`: a TruLens ``TruSession`` on Postgres with a synchronous driver."""
 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine
 from sqlalchemy.engine import URL, make_url
 
-from trulens_pg import migrations
-from trulens_pg.config import DEFAULT_SCHEMA, Settings, validate_schema_name
 from trulens_pg.errors import NotConnectedError, UnsupportedDatabaseError
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_DRIVERS = ("psycopg", "psycopg2")
+DATABASE_URL_ENV = "TRULENS_PG_DATABASE_URL"
 
 
 def normalize_database_url(database_url: str | URL) -> URL:
@@ -43,11 +43,10 @@ def normalize_database_url(database_url: str | URL) -> URL:
 
 @dataclass
 class PgContext:
-    """State shared by `wrap()`, `PgRunDao` and the metric store."""
+    """State shared by `wrap()`, `attach()` and `PgRunDao`."""
 
     session: Any
     engine: Engine
-    schema: str = DEFAULT_SCHEMA
 
 
 _CONTEXT: PgContext | None = None
@@ -66,29 +65,11 @@ def set_context(context: PgContext | None) -> None:
     _CONTEXT = context
 
 
-def create_store_engine(database_url: str | URL, **engine_kwargs: Any) -> Engine:
-    """Create a SQLAlchemy engine for the trulens_pg schema without a TruSession."""
-    engine_kwargs.setdefault("pool_pre_ping", True)
-    return create_engine(normalize_database_url(database_url), **engine_kwargs)
-
-
-def connect(
-    database_url: str | URL | None = None,
-    schema: str | None = None,
-    *,
-    migrate: bool = False,
-    check_schema: bool = True,
-    **session_kwargs: Any,
-) -> Any:
-    """Create a TruLens ``TruSession`` on Postgres and check the trulens_pg schema.
+def connect(database_url: str | URL | None = None, **session_kwargs: Any) -> Any:
+    """Create a TruLens ``TruSession`` on Postgres.
 
     Args:
         database_url: SQLAlchemy URL; defaults to ``TRULENS_PG_DATABASE_URL``.
-        schema: Schema of the metric store; defaults to ``TRULENS_PG_SCHEMA`` or
-            ``trulens_pg``.
-        migrate: Create or upgrade the trulens_pg schema before checking it.
-        check_schema: Check that the trulens_pg schema is at the latest revision.
-            Pass ``False`` to use only the run backend (G1, G2 for plain tables).
         **session_kwargs: Passed to ``TruSession`` (for example
             ``database_redact_keys=True``).
 
@@ -97,21 +78,11 @@ def connect(
     """
     from trulens.core import TruSession
 
-    settings = Settings.from_env()
-    raw_url = database_url or settings.database_url
-    if raw_url is None:
-        raise NotConnectedError("No database URL: pass one or set TRULENS_PG_DATABASE_URL.")
+    raw_url = database_url or os.environ.get(DATABASE_URL_ENV)
+    if not raw_url:
+        raise NotConnectedError(f"No database URL: pass one or set {DATABASE_URL_ENV}.")
     url = normalize_database_url(raw_url)
-    schema = validate_schema_name(schema or settings.schema)
-
     session = TruSession(database_url=url.render_as_string(hide_password=False), **session_kwargs)
-    engine: Engine = session.connector.db.engine
-
-    if migrate:
-        migrations.upgrade(engine, schema)
-    if check_schema:
-        migrations.check(engine, schema)
-
-    set_context(PgContext(session=session, engine=engine, schema=schema))
-    logger.info("trulens-pg connected to %s (trulens_pg schema %s)", url.render_as_string(), schema)
+    set_context(PgContext(session=session, engine=session.connector.db.engine))
+    logger.info("trulens-pg connected to %s", url.render_as_string())
     return session
