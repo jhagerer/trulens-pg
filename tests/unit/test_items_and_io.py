@@ -120,3 +120,10 @@ def test_detect_format() -> None:
     assert bench_io.detect_format("x.parquet") == "parquet"
     with pytest.raises(ValidationError):
         bench_io.detect_format("x.xlsx")
+
+
+def test_parquet_export_with_empty_metadata() -> None:
+    df = pd.DataFrame({"external_id": ["a", "b"], "metadata": [{}, {}], "tags": [["x"], []]})
+    back = bench_io.read_table(io.BytesIO(bench_io.to_bytes(df, "parquet")), "parquet")
+    assert list(back["metadata"]) == ["{}", "{}"]
+    assert list(back["tags"][0]) == ["x"]

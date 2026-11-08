@@ -1,11 +1,13 @@
 """Benchmark repository: datasets, versions, items, review, publish, corpus, runs.
 
-The Streamlit app and the CLI write to the bench schema only through this
+The Python API and the CLI write to the bench schema only through this
 module. Every public method runs in one database transaction.
 """
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -841,35 +843,58 @@ class Repository(BenchDB):
         )
 
     def add_documents(
-        self, corpus: str, documents: Iterable[DocumentIn | Mapping[str, Any]]
+        self,
+        corpus: str,
+        documents: Iterable[DocumentIn | Mapping[str, Any]],
+        *,
+        batch_size: int = 2000,
     ) -> int:
-        """Insert or replace documents by ``chunk_id``; updates the corpus content hash."""
-        docs = [
-            d if isinstance(d, DocumentIn) else DocumentIn.model_validate(dict(d))
-            for d in documents
-        ]
+        """Insert or replace documents by ``chunk_id``; updates the corpus content hash.
+
+        ``documents`` may be a generator: rows are validated and written in batches,
+        so large corpora (for example 500,000 documents) do not have to fit in memory.
+        All batches are one transaction.
+        """
+        count = 0
         with self.transaction() as s:
             c = self._corpus(s, corpus)
             table = m.Document.__table__
             assert isinstance(table, Table)
-            for start in range(0, len(docs), 5000):
-                chunk = [
-                    {"corpus_id": c.corpus_id, **d.model_dump()} for d in docs[start : start + 5000]
+            for batch in itertools.batched(documents, batch_size):
+                rows = [
+                    {
+                        "corpus_id": c.corpus_id,
+                        **(
+                            d if isinstance(d, DocumentIn) else DocumentIn.model_validate(dict(d))
+                        ).model_dump(),
+                    }
+                    for d in batch
                 ]
-                if not chunk:
-                    continue
-                stmt = insert(table).values(chunk)
+                stmt = insert(table).values(rows)
                 stmt = stmt.on_conflict_do_update(
                     constraint="uq_document_chunk",
                     set_={k: stmt.excluded[k] for k in ("title", "text", "source_uri", "metadata")},
                 )
                 s.execute(stmt)
-            all_docs = s.scalars(select(m.Document).where(m.Document.corpus_id == c.corpus_id))
-            c.content_hash = hashing.hash_records(
-                ({"chunk_id": d.chunk_id, "text": d.text, "title": d.title} for d in all_docs),
-                sort_key="chunk_id",
+                count += len(rows)
+            c.content_hash = self._corpus_hash(s, c.corpus_id)
+        return count
+
+    def _corpus_hash(self, s: Session, corpus_id: uuid.UUID) -> str:
+        """SHA-256 over (chunk_id, md5 of title and text), sorted by chunk_id, computed in SQL."""
+        digest = hashlib.sha256()
+        rows = s.execute(
+            select(
+                m.Document.chunk_id,
+                func.md5(func.coalesce(m.Document.title, "") + "\x1f" + m.Document.text),
             )
-            return len(docs)
+            .where(m.Document.corpus_id == corpus_id)
+            .order_by(m.Document.chunk_id)
+            .execution_options(yield_per=10_000)
+        )
+        for chunk_id, text_md5 in rows:
+            digest.update(f"{chunk_id}\t{text_md5}\n".encode())
+        return digest.hexdigest()
 
     def search_documents(
         self, corpus: str, search: str | None = None, *, limit: int = 50, offset: int = 0

@@ -1,4 +1,4 @@
-"""Command line interface: ``trulens-pg db | bench | app``."""
+"""Command line interface: ``trulens-pg db | bench``."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import getpass
 import json
 import os
-import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -209,38 +208,6 @@ def cmd_bench_export(args: argparse.Namespace) -> int:
     return 0
 
 
-# ------------------------------------------------------------------------ app
-
-
-def cmd_app(args: argparse.Namespace) -> int:
-    try:
-        import streamlit  # noqa: F401
-    except ImportError:
-        print('Install the app extra: pip install "trulens-pg[app]"', file=sys.stderr)
-        return 1
-    main_file = Path(__file__).parent / "app" / "main.py"
-    env = dict(os.environ)
-    if args.database_url:
-        env["TRULENS_PG_DATABASE_URL"] = args.database_url
-    if args.schema:
-        env["TRULENS_PG_BENCH_SCHEMA"] = args.schema
-    command = [
-        sys.executable,
-        "-m",
-        "streamlit",
-        "run",
-        str(main_file),
-        "--server.port",
-        str(args.port),
-        "--server.address",
-        args.address,
-        "--browser.gatherUsageStats",
-        "false",
-        *args.streamlit_args,
-    ]
-    return subprocess.call(command, env=env)  # noqa: S603 - fixed command, no shell
-
-
 # ---------------------------------------------------------------------- parser
 
 
@@ -319,11 +286,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_bench_export)
 
-    p = sub.add_parser("app", parents=[common], help="start the Streamlit app (extra [app])")
-    p.add_argument("--port", type=int, default=8502)
-    p.add_argument("--address", default="0.0.0.0")  # noqa: S104 - container entry point
-    p.add_argument("streamlit_args", nargs=argparse.REMAINDER)
-    p.set_defaults(func=cmd_app)
     return parser
 
 

@@ -36,7 +36,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-app = ["streamlit[auth]>=1.42", "altair>=5"]
 openai = ["trulens-providers-openai>=2.16,<2.17"]
 litellm = ["trulens-providers-litellm>=2.16,<2.17"]
 snowflake = ["snowflake-connector-python[pandas]>=3.10"]
@@ -65,8 +64,6 @@ dev = [
   "pre-commit>=4",
   "pandas-stubs>=2.2",
   "pyarrow>=15",
-  "streamlit[auth]>=1.42",
-  "altair>=5",
 ]
 
 [tool.hatch.version]
@@ -111,7 +108,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "PLR", "N802"]
 "src/trulens_pg/migrations/**" = ["N999"]
-"src/trulens_pg/app/pages/**" = ["SIM102"]  # nested st.button blocks read better
 "examples/**" = ["S", "T20"]
 
 [tool.ruff.lint.isort]
@@ -133,17 +129,10 @@ module = [
   "trulens.*",
   "datasets.*",
   "snowflake.*",
-  "altair.*",
   "pyarrow.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
-
-[[tool.mypy.overrides]]
-# Streamlit page scripts index pandas rows dynamically; they are covered by the
-# AppTest smoke tests in tests/integration/test_app.py instead.
-module = ["trulens_pg.app.pages.*"]
-ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

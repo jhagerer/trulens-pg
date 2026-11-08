@@ -54,7 +54,7 @@ class BenchDB:
 
     @classmethod
     def from_url(cls, database_url: str | None = None, bench_schema: str | None = None) -> Self:
-        """Create a store without a TruSession (CLI, Streamlit app)."""
+        """Create a store without a TruSession (CLI, scripts)."""
         from trulens_pg.errors import NotConnectedError
         from trulens_pg.session import create_bench_engine
 

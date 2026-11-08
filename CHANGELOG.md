@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Removed the Streamlit dashboard (pages, `trulens-pg app`, extra `[app]`, Dockerfile and the
+  variables `TRULENS_PG_DASHBOARD_URL`, `TRULENS_PG_AUTH`, `TRULENS_PG_ROLES`). Benchmarks and
+  metrics are managed through the Python API and the CLI.
+- `Repository.add_documents` streams documents in batches and computes the corpus hash in
+  SQL, so large corpora (for example EnterpriseRAG-Bench, about 500,000 documents) load
+  without holding all texts in memory.
+- README: one code example per functionality, and an EnterpriseRAG-Bench example.
+
+
 Changes for the updated specification (2026-11-07):
 
 - Judge prompts of `llm_judge` metrics live in the TruLens prompt registry. Migration `0002`

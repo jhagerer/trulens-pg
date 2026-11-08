@@ -3,51 +3,254 @@
 Postgres-compatible TruLens evaluation and benchmark management.
 
 trulens-pg makes the [TruLens](https://github.com/truera/trulens) Run API work on PostgreSQL as
-it works on Snowflake. It adds three parts in front of one Postgres database. TruLens code
-stays unchanged.
+it works on Snowflake, and adds a versioned benchmark store and a custom metric store in the
+same database. TruLens code stays unchanged.
 
-| Gap on Postgres with TruLens 2.16 | Fix in trulens-pg |
-|---|---|
-| **G1** The run backend is wired only with `connector=`; otherwise `ValueError: Run DAO not initialized` | `tpg.wrap()` / `tpg.attach()` install `PgRunDao` |
-| **G2** `source_type="TABLE"` fails with `NotImplementedError` | `PgRunDao.fetch_source_data` reads tables, views and published benchmark versions |
-| **G3** No dashboard to manage benchmark datasets and metrics; the TruLens dashboard manages only prompt versions | Streamlit dashboard on a versioned `bench` schema |
+## What trulens-pg does
 
-It also provides a **custom metric store**: LLM-judge metrics are defined, calibrated against
-human labels and versioned as Postgres rows. They run by name on Postgres and, as client-side
-TruLens `Metric` objects, on Snowflake.
+Each example assumes `import trulens_pg as tpg` and the objects of the examples before it.
+`rag` stands for your RAG app, `pd` is pandas, and `RunConfig` comes from `trulens.core.run`.
 
-Status: alpha (spec v0.1, milestones M1 to M4 implemented, M5 partly; see [Status](#status)).
+**1. Connect TruLens to Postgres.** Creates the `TruSession` and the `bench` schema.
+
+```python
+session = tpg.connect("postgresql+psycopg://user:password@host/evals", migrate=True)
+```
+
+**2. Use the TruLens Run API without `connector=`.** Plain TruLens raises
+`Run DAO not initialized` on Postgres.
+
+```python
+tru_app = tpg.wrap(rag, app_name="claims_rag", app_version="v1", main_method=rag.answer)
+# or for an existing TruApp, TruChain, TruGraph or TruLlama: tpg.attach(tru_chain)
+run = tru_app.add_run(
+    RunConfig(run_name="smoke", dataset_name="inline", dataset_spec={"input": "input"})
+)
+run.start(input_df=pd.DataFrame({"input": ["Is glass damage covered?"]}))
+```
+
+**3. Read run inputs from a Postgres table.** Plain TruLens raises `NotImplementedError` for
+`source_type="TABLE"` on Postgres.
+
+```python
+run = tru_app.add_run(
+    RunConfig(
+        run_name="from_table",
+        source_type="TABLE",
+        dataset_name="eval.questions?split=test&limit=100",  # table or view, with optional filters
+        dataset_spec={"input": "question", "ground_truth_output": "answer"},
+    )
+)
+run.start()
+```
+
+**4. Keep benchmarks as versioned datasets.** A published version is read-only, gets the view
+`bench.v_claims_faq__1_0_0`, and is also written as the TruLens dataset `claims_faq@1.0.0`.
+
+```python
+from trulens_pg.bench import Repository, io
+
+repo = Repository.from_context()
+repo.create_dataset("claims_faq")
+draft = repo.create_draft("claims_faq", "1.0.0", copy_from=None)
+repo.add_items(draft.version_id, io.validate_frame(io.read_table("claims_faq.csv")).items)
+repo.submit_for_review(draft.version_id)
+for item_id in repo.review_queue(draft.version_id)["item_id"]:
+    repo.add_review(item_id, reviewer="alice", decision="accept")
+repo.publish_version(draft.version_id, published_by="bob", changelog="First version")
+```
+
+**5. Run your app on a benchmark version.**
+
+```python
+run = tru_app.add_run(
+    RunConfig(
+        run_name="v1_on_1.0.0",
+        source_type="TABLE",
+        dataset_name="bench:claims_faq@1.0.0",
+        dataset_spec={"input": "input", "ground_truth_output": "ground_truth_output"},
+    )
+)
+run.start()
+```
+
+**6. Store the documents that answers should come from.** A draft version gets a corpus;
+`missing_context_ids` lists `ground_truth_context_ids` entries that are not in it.
+
+```python
+repo.create_corpus("policies")
+repo.add_documents("policies", [{"chunk_id": "KFZ-1001", "title": "Glass damage", "text": "..."}])
+draft = repo.create_draft("claims_faq")  # version 1.1.0, copied from 1.0.0
+repo.set_corpus(draft.version_id, "policies")
+print(repo.missing_context_ids(draft.version_id))  # empty if every ID exists
+```
+
+**7. Turn production traces into benchmark items.** Uses TruLens `curate_records_to_dataset`
+and keeps the source record in the item metadata.
+
+```python
+from trulens_pg import trulens_store
+
+records, _ = session.get_records_and_feedback(app_name="claims_rag")
+failures = trulens_store.filter_traces(records, metric="policy_citation@1", max_score=0.5)
+_, items = trulens_store.traces_to_items(repo.trulens, failures, dataset="claims_faq")
+repo.add_items(repo.create_draft("claims_faq").version_id, items)
+```
+
+**8. Export a benchmark version.** Items with personal data are left out by default.
+
+```python
+frame = repo.version_frame(repo.get_version("claims_faq", "1.0.0").version_id)
+io.write_file(frame, "claims_faq-1.0.0.parquet")
+io.export_snowflake(
+    frame, "EVALS.BENCH.CLAIMS_FAQ_1_0_0", connection_params={"connection_name": "prod"}
+)
+```
+
+**9. Define an LLM-judge metric as data.** The prompt is stored as a version in the TruLens
+prompt registry; the metric pins that exact version. Publishing requires a calibration
+against human scores.
+
+```python
+store = tpg.MetricStore.from_context()
+store.create_metric("policy_citation", "llm_judge")
+draft = store.create_draft(
+    "policy_citation",
+    prompt_text="Question: {{question}}\nAnswer: {{answer}}",
+    rubric="3: the answer names the policy clause it uses. 0: it names none.",
+    judge={"provider": "openai", "model": "gpt-4o-mini"},
+)
+store.add_labels("policy_citation", [{"question": "...", "answer": "...", "human_score": 3}])
+print(store.calibrate(draft.metric_version_id).spearman)  # agreement with the human scores
+store.publish(draft.metric_version_id, published_by="bob")  # needs 20 labels by default
+```
+
+**10. Use the other metric kinds and bundle metrics in a set.**
+
+```python
+store.create_metric("context_recall_at_5", "ground_truth")  # compares with the benchmark
+store.create_draft("context_recall_at_5", params={"method": "recall_at_k", "k": 5})
+store.create_metric("guideline_correctness", "criteria")  # allow-listed TruLens judge method
+store.create_draft(
+    "guideline_correctness",
+    params={"method": "correctness"},
+    criteria="Follows the claims guideline.",
+)
+store.create_metric("has_policy_number", "python_ref")  # function of an installed package
+store.create_draft("has_policy_number", python_ref="contains_policy_number")
+# after publishing each version:
+store.create_metric_set(
+    "claims-rag-v1", ["policy_citation@1", "context_recall_at_5@1", "has_policy_number@1"]
+)
+```
+
+**11. Compute stored metrics by name.** Accepts metric names, `name@version`, metric sets and
+TruLens `Metric` objects.
+
+```python
+tpg.compute_metrics(run, ["claims-rag-v1"])
+metrics = tpg.resolve_metrics(
+    ["policy_citation@1"]
+)  # TruLens Metric objects, also for Snowflake runs
+```
+
+**12. Compare runs per benchmark version.**
+
+```python
+version = repo.get_version("claims_faq", "1.0.0")
+print(repo.runs_for_version(version.version_id))  # runs that used this version
+print(repo.run_metric_summary(version.version_id, session))  # mean, spread, count per metric
+```
+
+**13. Use the command line.**
+
+```bash
+trulens-pg db upgrade
+trulens-pg bench import claims_faq.csv --dataset claims_faq --create --version 1.0.0 --publish
+trulens-pg bench export claims_faq@1.0.0 --target jsonl --out claims_faq.jsonl
+```
+
+## Example: EnterpriseRAG-Bench
+
+[EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) has 500 questions
+about 500,000 internal documents of a fictional company. Download `all_documents.zip`
+from its latest release and `questions.jsonl` from the repository. `agent` stands for your RAG
+agent; `agent.answer(question)` returns the answer text.
+
+```python
+import zipfile
+from pathlib import Path
+
+import pandas as pd
+from trulens.core.run import RunConfig
+
+import trulens_pg as tpg
+from trulens_pg.bench import Repository, io
+
+session = tpg.connect("postgresql+psycopg://user:password@host/evals", migrate=True)
+repo = Repository.from_context()
+
+# Documents: file names start with the document ID, "dsid_<id>__<name>.txt"
+repo.create_corpus("erb_documents")
+with zipfile.ZipFile("all_documents.zip") as archive:
+    repo.add_documents(
+        "erb_documents",
+        (
+            {"chunk_id": Path(name).name.split("__")[0], "text": archive.read(name).decode()}
+            for name in archive.namelist()
+            if name.endswith(".txt")
+        ),
+    )
+
+# Questions as the published benchmark version enterprise_rag_bench@1.0.0
+repo.create_dataset("enterprise_rag_bench")
+draft = repo.create_draft("enterprise_rag_bench", "1.0.0", copy_from=None)
+repo.set_corpus(draft.version_id, "erb_documents")
+questions = pd.read_json("questions.jsonl", lines=True)
+repo.add_items(
+    draft.version_id,
+    io.validate_frame(
+        questions,
+        {
+            "external_id": "question_id",
+            "query": "question",
+            "ground_truth_answer": "gold_answer",
+            "ground_truth_context_ids": "expected_doc_ids",
+            "tags": "question_type",
+        },
+    ).items,
+)
+repo.publish_version(draft.version_id, published_by="me", require_review=False)
+
+# Run the agent on all 500 questions
+tru_app = tpg.wrap(agent, app_name="my_agent", app_version="v1", main_method=agent.answer)
+run = tru_app.add_run(
+    RunConfig(
+        run_name="erb_v1",
+        source_type="TABLE",
+        dataset_name="bench:enterprise_rag_bench@1.0.0",
+        dataset_spec={"input": "input", "ground_truth_output": "ground_truth_output"},
+    )
+)
+run.start()
+```
+
+The columns `answer_facts` and `source_types` are kept in the item metadata. To score the
+answers, compute metrics as in examples 9 to 11, for example a `ground_truth` metric with
+`params={"method": "agreement_measure"}`, which compares each answer with the gold answer.
 
 ## Install
 
 ```bash
 pip install "trulens-pg @ git+https://github.com/jhagerer/trulens-pg.git"
-# with extras: app (Streamlit), openai, litellm (judges), snowflake (export), hf, parquet
-pip install "trulens-pg[app,openai] @ git+https://github.com/jhagerer/trulens-pg.git"
+# with extras: openai, litellm (judges), snowflake (export), hf, parquet
+pip install "trulens-pg[openai] @ git+https://github.com/jhagerer/trulens-pg.git"
 ```
 
 Requirements: Python 3.12 or 3.13, PostgreSQL 14 to 17, TruLens 2.16.x, a synchronous driver
 (psycopg 3, installed by default, or psycopg2). `postgresql+asyncpg://` URLs are rejected.
 
-## Quickstart
-
-```python
-import trulens_pg as tpg
-from trulens.core.run import RunConfig
-
-session = tpg.connect("postgresql+psycopg://user@host/evals", migrate=True)
-tru_app = tpg.wrap(rag, app_name="claims_rag", app_version="v3", main_method=rag.answer)  # G1
-run = tru_app.add_run(
-    RunConfig(
-        run_name="v3_test",
-        dataset_name="bench:claims_faq@1.0.0",  # published benchmark version
-        source_type="TABLE",  # G2
-        dataset_spec={"input": "input", "ground_truth_output": "ground_truth_output"},
-    )
-)
-run.start()
-tpg.compute_metrics(run, ["claims-rag-v1"], judge=judge)  # stored metric set
-```
+## Runnable examples
 
 `examples/` contains a runnable walk-through on a 50-item example benchmark with a
 15-chunk corpus, a keyword-retrieval RAG app and an offline judge (no API key needed):
@@ -159,44 +362,6 @@ touch it; TruLens keeps managing its own tables.
   metric tables stay in `bench`, because TruLens datasets have none of these. Writing is
   idempotent; `trulens-pg bench sync-trulens` repeats it.
 
-## Streamlit dashboard (G3)
-
-```bash
-pip install "trulens-pg[app] @ git+https://github.com/jhagerer/trulens-pg.git"
-trulens-pg app --port 8502
-# or: docker build -t trulens-pg-app . && docker run -p 8502:8502 -e TRULENS_PG_DATABASE_URL=... trulens-pg-app
-```
-
-Pages — Benchmarks: Datasets, Import, Items, Corpus, Review, Publish, Runs, Export.
-Metrics: Metrics, Metric editor, Playground, Calibration, Metric publish, Metric sets.
-
-- **Import** reads CSV, JSONL, Parquet, a Hugging Face dataset, or recorded production traces
-  (selected by app, app version, time range or metric score). Traces are converted with
-  TruLens `curate_records_to_dataset` (column mapping, provenance metadata, error report),
-  staged as the TruLens dataset `trulens-pg-import/<dataset>/<timestamp>`, and copied with
-  their provenance into a new draft. A recorded output used as answer is a draft ground truth
-  that reviewers must check.
-- **Metric editor** writes a judge prompt as a new TruLens prompt version or picks one from
-  the registry; placeholders are checked against the mapped inputs.
-
-Pages use only the repository and metric store; every write is one transaction and is
-confirmed with the affected row count. Playground and calibration show the number of judge
-calls before they start.
-
-| Variable | Meaning |
-|---|---|
-| `TRULENS_PG_DATABASE_URL` | Postgres URL |
-| `TRULENS_PG_BENCH_SCHEMA` | Bench schema (default `bench`) |
-| `TRULENS_PG_DASHBOARD_URL` | TruLens dashboard, linked from the Runs page |
-| `TRULENS_PG_AUTH` | `oidc` (default, `st.login` with `[auth]` in `.streamlit/secrets.toml`), `proxy` (user from `X-Forwarded-Email` or `TRULENS_PG_AUTH_HEADER`), `none` (local only) |
-| `TRULENS_PG_ROLES` | e.g. `alice@x.com=publisher; *=editor`. Unset: every user is editor and publisher |
-| `TRULENS_PG_MIN_CALIBRATION_LABELS` | Labels needed before a judge metric is published (default 20) |
-| `TRULENS_PG_MIN_SPEARMAN` | Optional minimum Spearman correlation for publishing |
-| `TRULENS_PG_JUDGE_PROVIDER`, `_MODEL`, `_TEMPERATURE` | Default judge (`openai`, `azure_openai`, `litellm`); API keys come from the provider's own variables |
-
-Roles: an *editor* imports, edits, reviews, labels and runs the playground; a *publisher*
-also publishes, deprecates, exports and creates metric sets.
-
 ## CLI
 
 ```text
@@ -208,7 +373,6 @@ trulens-pg bench import-corpus FILE --corpus NAME [--create]
 trulens-pg bench sync-trulens [DATASET@VERSION]   # write published versions as TruLens datasets
 trulens-pg bench export DATASET@VERSION --target jsonl|csv|parquet|snowflake [--include-pii]
                          [--snowflake-table DB.SCHEMA.TABLE --snowflake-connection NAME]
-trulens-pg app [--port 8502]
 ```
 
 Imports above 100,000 rows belong in the CLI; the app refuses them.
@@ -281,7 +445,7 @@ git tags (`vX.Y.Z`); the release workflow attaches the wheel to each GitHub rele
 | M1 package, run backend wiring (G1) | Implemented and tested |
 | M2 table sources (G2) | Implemented and tested; 100k-row performance target not measured |
 | M3 custom metric store | Implemented and tested with an offline judge; not yet run against a live judge provider |
-| M4 benchmark store and dashboard (G3) | Implemented; pages covered by Streamlit AppTest smoke tests; usability test pending |
+| M4 benchmark store (G3) | Benchmark store, review and publish implemented (Python API and CLI); the Streamlit dashboard was removed on request |
 | M5 cross-platform | Snowflake export implemented but not tested against a Snowflake account; upstream TruLens pull requests not opened |
 
 ## Licence

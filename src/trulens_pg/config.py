@@ -4,9 +4,6 @@
 |---------------------------------------|-------------------------------------------------|
 | ``TRULENS_PG_DATABASE_URL``           | SQLAlchemy URL of the Postgres database         |
 | ``TRULENS_PG_BENCH_SCHEMA``           | Schema of the benchmark and metric store        |
-| ``TRULENS_PG_DASHBOARD_URL``          | URL of the TruLens dashboard (linked from app)  |
-| ``TRULENS_PG_ROLES``                  | Role list for the Streamlit app                 |
-| ``TRULENS_PG_AUTH``                   | ``oidc``, ``proxy`` or ``none`` (app login)     |
 | ``TRULENS_PG_MIN_CALIBRATION_LABELS`` | Labels needed before a judge metric is published |
 | ``TRULENS_PG_MIN_SPEARMAN``           | Optional minimum Spearman correlation           |
 | ``TRULENS_PG_JUDGE_PROVIDER``         | ``openai``, ``azure_openai`` or ``litellm``     |
@@ -43,9 +40,6 @@ class Settings:
 
     database_url: str | None = None
     bench_schema: str = DEFAULT_BENCH_SCHEMA
-    dashboard_url: str | None = None
-    roles: str = ""
-    auth: str = "oidc"
     min_calibration_labels: int = DEFAULT_MIN_CALIBRATION_LABELS
     min_spearman: float | None = None
     judge: dict[str, str] = field(default_factory=dict)
@@ -64,9 +58,6 @@ class Settings:
             bench_schema=validate_schema_name(
                 env.get("TRULENS_PG_BENCH_SCHEMA") or DEFAULT_BENCH_SCHEMA
             ),
-            dashboard_url=env.get("TRULENS_PG_DASHBOARD_URL") or None,
-            roles=env.get("TRULENS_PG_ROLES", ""),
-            auth=(env.get("TRULENS_PG_AUTH") or "oidc").lower(),
             min_calibration_labels=int(
                 env.get("TRULENS_PG_MIN_CALIBRATION_LABELS") or DEFAULT_MIN_CALIBRATION_LABELS
             ),

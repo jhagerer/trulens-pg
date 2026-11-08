@@ -66,7 +66,7 @@ def get_context() -> PgContext:
 
 
 def set_context(context: PgContext | None) -> None:
-    """Replace the current context (used by tests and the Streamlit app)."""
+    """Replace the current context (used by tests)."""
     global _CONTEXT  # noqa: PLW0603 - one context per process, like TruSession
     _CONTEXT = context
 

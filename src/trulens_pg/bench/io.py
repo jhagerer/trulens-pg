@@ -169,7 +169,15 @@ def to_bytes(df: pd.DataFrame, fmt: FileFormat) -> bytes:
         return _frame_for_text(df).to_csv(index=False).encode("utf-8")
     if fmt == "parquet":
         buffer = io.BytesIO()
-        df.to_parquet(buffer, index=False)
+        # Arrow cannot write a struct column without fields (all metadata dicts empty)
+        # and needs one schema per column, so dict columns are stored as JSON text.
+        out = df.copy()
+        for col in out.columns:
+            if out[col].map(lambda v: isinstance(v, dict)).any():
+                out[col] = out[col].map(
+                    lambda v: json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v
+                )
+        out.to_parquet(buffer, index=False)
         return buffer.getvalue()
     raise ValidationError(f"Unsupported format {fmt!r}.")
 
