@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Removed the benchmark store: `Repository`, dataset versions, items, corpus, review, run
+  links, `bench:<dataset>@<version>` sources, file import and export, trace import, TruLens
+  dataset sync and the `trulens-pg bench` commands. Benchmarks are plain Postgres tables or
+  views, read with `source_type="TABLE"`.
+- The schema now holds only the metric store; default name `trulens_pg`
+  (`TRULENS_PG_SCHEMA`, `connect(schema=...)`). The two migrations were replaced by one
+  initial migration, because no version was released.
+- `ground_truth` metrics take their ground truth from `golden_set=` (list of dicts or a
+  DataFrame) in `resolve_metrics()` and `compute_metrics()`.
+- Removed the extras `snowflake`, `hf` and `parquet`.
+
+
 - Removed the Streamlit dashboard (pages, `trulens-pg app`, extra `[app]`, Dockerfile and the
   variables `TRULENS_PG_DASHBOARD_URL`, `TRULENS_PG_AUTH`, `TRULENS_PG_ROLES`). Benchmarks and
   metrics are managed through the Python API and the CLI.

@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "trulens-pg"
 dynamic = ["version"]
-description = "Postgres-compatible TruLens evaluation and benchmark management"
+description = "Postgres-compatible TruLens evaluation with stored custom metrics"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.14"
 authors = [{ name = "Johann Hagerer" }]
-keywords = ["trulens", "postgres", "rag", "evaluation", "benchmark", "llm-judge"]
+keywords = ["trulens", "postgres", "rag", "evaluation", "llm-judge"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -38,9 +38,6 @@ dependencies = [
 [project.optional-dependencies]
 openai = ["trulens-providers-openai>=2.16,<2.17"]
 litellm = ["trulens-providers-litellm>=2.16,<2.17"]
-snowflake = ["snowflake-connector-python[pandas]>=3.10"]
-hf = ["datasets>=2.19"]
-parquet = ["pyarrow>=15"]
 psycopg2 = ["psycopg2-binary>=2.9"]
 
 [project.scripts]
@@ -63,7 +60,6 @@ dev = [
   "mypy>=1.13",
   "pre-commit>=4",
   "pandas-stubs>=2.2",
-  "pyarrow>=15",
 ]
 
 [tool.hatch.version]
@@ -127,9 +123,6 @@ exclude = ["src/trulens_pg/_version\\.py$"]
 [[tool.mypy.overrides]]
 module = [
   "trulens.*",
-  "datasets.*",
-  "snowflake.*",
-  "pyarrow.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

@@ -12,7 +12,7 @@ class UnsupportedDatabaseError(TrulensPgError):
 
 
 class SchemaNotReadyError(TrulensPgError):
-    """The bench schema is missing or not at the latest Alembic revision."""
+    """The trulens_pg schema is missing or not at the latest Alembic revision."""
 
 
 class NotConnectedError(TrulensPgError):
@@ -20,7 +20,7 @@ class NotConnectedError(TrulensPgError):
 
 
 class SourceError(TrulensPgError):
-    """A run source (table, view or benchmark version) cannot be read."""
+    """A run source (table or view) cannot be read."""
 
 
 class NotFoundError(TrulensPgError):

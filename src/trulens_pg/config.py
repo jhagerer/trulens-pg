@@ -3,7 +3,7 @@
 | Variable                              | Meaning                                         |
 |---------------------------------------|-------------------------------------------------|
 | ``TRULENS_PG_DATABASE_URL``           | SQLAlchemy URL of the Postgres database         |
-| ``TRULENS_PG_BENCH_SCHEMA``           | Schema of the benchmark and metric store        |
+| ``TRULENS_PG_SCHEMA``           | Schema of the metric store (default trulens_pg) |
 | ``TRULENS_PG_MIN_CALIBRATION_LABELS`` | Labels needed before a judge metric is published |
 | ``TRULENS_PG_MIN_SPEARMAN``           | Optional minimum Spearman correlation           |
 | ``TRULENS_PG_JUDGE_PROVIDER``         | ``openai``, ``azure_openai`` or ``litellm``     |
@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 from trulens_pg.errors import ValidationError
 
-DEFAULT_BENCH_SCHEMA = "bench"
+DEFAULT_SCHEMA = "trulens_pg"
 DEFAULT_MIN_CALIBRATION_LABELS = 20
 
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
@@ -39,7 +39,7 @@ class Settings:
     """Settings resolved from the environment."""
 
     database_url: str | None = None
-    bench_schema: str = DEFAULT_BENCH_SCHEMA
+    schema: str = DEFAULT_SCHEMA
     min_calibration_labels: int = DEFAULT_MIN_CALIBRATION_LABELS
     min_spearman: float | None = None
     judge: dict[str, str] = field(default_factory=dict)
@@ -55,9 +55,7 @@ class Settings:
         }
         return cls(
             database_url=env.get("TRULENS_PG_DATABASE_URL") or None,
-            bench_schema=validate_schema_name(
-                env.get("TRULENS_PG_BENCH_SCHEMA") or DEFAULT_BENCH_SCHEMA
-            ),
+            schema=validate_schema_name(env.get("TRULENS_PG_SCHEMA") or DEFAULT_SCHEMA),
             min_calibration_labels=int(
                 env.get("TRULENS_PG_MIN_CALIBRATION_LABELS") or DEFAULT_MIN_CALIBRATION_LABELS
             ),

@@ -127,33 +127,15 @@ def test_prompt_registry_api() -> None:
     assert "strict" in render
 
 
-def test_dataset_api() -> None:
-    """Published versions become TruLens datasets; traces are curated (spec sections 5, 6.1)."""
-    from trulens.core import dataset as core_dataset
-    from trulens.core.database.sqlalchemy import SQLAlchemyDB
-    from trulens.core.schema.groundtruth import GroundTruth
+def test_ground_truth_agreement_accepts_dataframes() -> None:
+    """golden_set may be a DataFrame, for example read from a Postgres table."""
+    import pandas as pd
+    from trulens.feedback import GroundTruthAgreement
 
-    gt_params = inspect.signature(GroundTruth.__init__).parameters
-    for name in ("dataset_id", "query", "query_id", "expected_response", "expected_chunks", "meta"):
-        assert name in gt_params, name
-    for method in (
-        "insert_dataset",
-        "batch_insert_ground_truth",
-        "get_ground_truths_by_dataset",
-        "get_prompt",
-        "get_prompt_version",
-        "get_prompts",
-        "get_prompt_versions",
-    ):
-        assert hasattr(SQLAlchemyDB, method), method
-    curate = inspect.signature(core_dataset.curate_records_to_dataset).parameters
-    for name in ("dataset_name", "records", "db", "mapping", "on_error"):
-        assert name in curate, name
-    assert set(core_dataset.TraceDatasetMapping.model_fields) >= {
-        "query",
-        "query_id",
-        "expected_response",
-        "expected_chunks",
-        "metadata",
-    }
-    assert core_dataset.PROVENANCE_COLUMNS["source_app_name"] == "app_name"
+    from trulens_pg.metrics.build import _offline_provider
+
+    golden = pd.DataFrame(
+        [{"query": "q", "expected_response": "a", "expected_chunks": [{"text": "t1"}]}]
+    )
+    gta = GroundTruthAgreement(golden, provider=_offline_provider())
+    assert gta.recall_at_k("q", ["t1", "t2"], k=2) == 1.0

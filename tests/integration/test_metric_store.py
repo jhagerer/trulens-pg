@@ -146,38 +146,22 @@ def test_invalid_judge_prompt_is_rejected(store: Any) -> None:
         store.create_draft("bad_prompt", prompt_text="No placeholders at all")
 
 
-def test_migration_0002_refuses_stored_prompt_templates(pg_url: str, ctx: Any) -> None:
+def test_migrations_up_and_down(pg_url: str, ctx: Any) -> None:
     from trulens_pg import migrations
-    from trulens_pg.session import create_bench_engine
+    from trulens_pg.session import create_store_engine
 
-    schema = "bench_migration_test"
-    engine = create_bench_engine(pg_url)
+    schema = "tpg_migration_test"
+    engine = create_store_engine(pg_url)
     try:
-        if migrations.current_revision(engine, schema) is not None:
-            migrations.downgrade(engine, schema, "base")
-        migrations.upgrade(engine, schema, "0001")
         with engine.begin() as conn:
-            conn.execute(
-                text(
-                    f"INSERT INTO {schema}.metric (metric_id, name, kind, higher_is_better) "
-                    "VALUES (gen_random_uuid(), 'm', 'llm_judge', true)"
-                )
-            )
-            conn.execute(
-                text(
-                    f"INSERT INTO {schema}.metric_version (metric_version_id, metric_id, "
-                    "version, status, prompt_template, score_min, score_max, inputs, judge, "
-                    "params, examples) SELECT gen_random_uuid(), metric_id, 1, 'draft', "
-                    f"'{{question}}', 0, 3, '{{}}', '{{}}', '{{}}', '[]' FROM {schema}.metric"
-                )
-            )
-        with pytest.raises(RuntimeError, match="prompt registry"):
-            migrations.upgrade(engine, schema)
-        assert migrations.current_revision(engine, schema) == "0001"
-        with engine.begin() as conn:
-            conn.execute(text(f"TRUNCATE {schema}.metric_version, {schema}.metric CASCADE"))
+            conn.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        assert migrations.current_revision(engine, schema) is None
         migrations.upgrade(engine, schema)
         assert migrations.current_revision(engine, schema) == migrations.head_revision()
+        migrations.check(engine, schema)
         migrations.downgrade(engine, schema, "base")
+        assert migrations.current_revision(engine, schema) is None
     finally:
+        with engine.begin() as conn:
+            conn.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
         engine.dispose()

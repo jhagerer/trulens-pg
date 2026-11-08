@@ -1,11 +1,11 @@
-"""Content hashes for dataset versions and metric versions."""
+"""Content hashes of metric versions."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -24,19 +24,6 @@ def canonical_json(value: Any) -> str:
     return json.dumps(
         normalize(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str
     )
-
-
-def hash_records(records: Iterable[Mapping[str, Any]], sort_key: str) -> str:
-    """SHA-256 over records sorted by ``sort_key`` after normalisation."""
-    lines = sorted(
-        (canonical_json(r) for r in records),
-        key=lambda line: (json.loads(line).get(sort_key, ""), line),
-    )
-    digest = hashlib.sha256()
-    for line in lines:
-        digest.update(line.encode("utf-8"))
-        digest.update(b"\n")
-    return digest.hexdigest()
 
 
 def hash_object(value: Mapping[str, Any]) -> str:

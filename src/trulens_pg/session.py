@@ -1,4 +1,4 @@
-"""`connect()`: TruSession on Postgres, driver check and bench schema check."""
+"""`connect()`: TruSession on Postgres, driver check and trulens_pg schema check."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import URL, make_url
 
 from trulens_pg import migrations
-from trulens_pg.config import DEFAULT_BENCH_SCHEMA, Settings, validate_schema_name
+from trulens_pg.config import DEFAULT_SCHEMA, Settings, validate_schema_name
 from trulens_pg.errors import NotConnectedError, UnsupportedDatabaseError
 
 logger = logging.getLogger(__name__)
@@ -43,16 +43,11 @@ def normalize_database_url(database_url: str | URL) -> URL:
 
 @dataclass
 class PgContext:
-    """State shared by `wrap()`, `PgRunDao`, the repository and the metric store."""
+    """State shared by `wrap()`, `PgRunDao` and the metric store."""
 
     session: Any
     engine: Engine
-    bench_schema: str = DEFAULT_BENCH_SCHEMA
-
-    @property
-    def bench_engine(self) -> Engine:
-        """Engine whose ORM statements map the placeholder schema to `bench_schema`."""
-        return self.engine.execution_options(schema_translate_map={"bench": self.bench_schema})
+    schema: str = DEFAULT_SCHEMA
 
 
 _CONTEXT: PgContext | None = None
@@ -71,28 +66,28 @@ def set_context(context: PgContext | None) -> None:
     _CONTEXT = context
 
 
-def create_bench_engine(database_url: str | URL, **engine_kwargs: Any) -> Engine:
-    """Create a SQLAlchemy engine for the bench schema without a TruSession."""
+def create_store_engine(database_url: str | URL, **engine_kwargs: Any) -> Engine:
+    """Create a SQLAlchemy engine for the trulens_pg schema without a TruSession."""
     engine_kwargs.setdefault("pool_pre_ping", True)
     return create_engine(normalize_database_url(database_url), **engine_kwargs)
 
 
 def connect(
     database_url: str | URL | None = None,
-    bench_schema: str | None = None,
+    schema: str | None = None,
     *,
     migrate: bool = False,
     check_schema: bool = True,
     **session_kwargs: Any,
 ) -> Any:
-    """Create a TruLens ``TruSession`` on Postgres and check the bench schema.
+    """Create a TruLens ``TruSession`` on Postgres and check the trulens_pg schema.
 
     Args:
         database_url: SQLAlchemy URL; defaults to ``TRULENS_PG_DATABASE_URL``.
-        bench_schema: Schema of the benchmark and metric store; defaults to
-            ``TRULENS_PG_BENCH_SCHEMA`` or ``bench``.
-        migrate: Create or upgrade the bench schema before checking it.
-        check_schema: Check that the bench schema is at the latest revision.
+        schema: Schema of the metric store; defaults to ``TRULENS_PG_SCHEMA`` or
+            ``trulens_pg``.
+        migrate: Create or upgrade the trulens_pg schema before checking it.
+        check_schema: Check that the trulens_pg schema is at the latest revision.
             Pass ``False`` to use only the run backend (G1, G2 for plain tables).
         **session_kwargs: Passed to ``TruSession`` (for example
             ``database_redact_keys=True``).
@@ -107,7 +102,7 @@ def connect(
     if raw_url is None:
         raise NotConnectedError("No database URL: pass one or set TRULENS_PG_DATABASE_URL.")
     url = normalize_database_url(raw_url)
-    schema = validate_schema_name(bench_schema or settings.bench_schema)
+    schema = validate_schema_name(schema or settings.schema)
 
     session = TruSession(database_url=url.render_as_string(hide_password=False), **session_kwargs)
     engine: Engine = session.connector.db.engine
@@ -117,6 +112,6 @@ def connect(
     if check_schema:
         migrations.check(engine, schema)
 
-    set_context(PgContext(session=session, engine=engine, bench_schema=schema))
-    logger.info("trulens-pg connected to %s (bench schema %s)", url.render_as_string(), schema)
+    set_context(PgContext(session=session, engine=engine, schema=schema))
+    logger.info("trulens-pg connected to %s (trulens_pg schema %s)", url.render_as_string(), schema)
     return session

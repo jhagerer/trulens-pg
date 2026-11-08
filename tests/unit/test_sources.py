@@ -7,32 +7,19 @@ from trulens_pg.errors import SourceError
 from trulens_pg.sources import (
     SourceOptions,
     apply_sampling,
-    bench_source,
     parse_source_name,
-    view_name,
 )
 
 
 def test_parse_plain_table() -> None:
     ref = parse_source_name("questions")
-    assert (ref.schema, ref.table, ref.is_benchmark) == (None, "questions", False)
+    assert (ref.schema, ref.table) == (None, "questions")
 
 
 def test_parse_schema_table() -> None:
-    ref = parse_source_name("bench_eval.questions")
-    assert (ref.schema, ref.table) == ("bench_eval", "questions")
-    assert ref.qualified == "bench_eval.questions"
-
-
-def test_parse_benchmark() -> None:
-    ref = parse_source_name("bench:claims_faq@1.2.0", bench_schema="evals")
-    assert ref.is_benchmark
-    assert (ref.schema, ref.table, ref.dataset, ref.version) == (
-        "evals",
-        "v_claims_faq__1_2_0",
-        "claims_faq",
-        "1.2.0",
-    )
+    ref = parse_source_name("eval.questions")
+    assert (ref.schema, ref.table) == ("eval", "questions")
+    assert ref.qualified == "eval.questions"
 
 
 @pytest.mark.parametrize(
@@ -42,12 +29,10 @@ def test_parse_benchmark() -> None:
         "a.b.c",
         "questions; DROP TABLE x",
         'public."x"',
-        "bench:claims_faq",
-        "bench:claims_faq@1.2",
-        "bench:Claims@1.0.0",
-        "bench:claims_faq@1.0.0?unknown=1",
-        "bench:claims_faq@1.0.0?limit=0",
-        "bench:claims_faq@1.0.0?sample=1.5",
+        "bench:claims_faq@1.0.0",
+        "eval.questions?unknown=1",
+        "eval.questions?limit=0",
+        "eval.questions?sample=1.5",
     ],
 )
 def test_parse_rejects_invalid(name: str) -> None:
@@ -55,15 +40,9 @@ def test_parse_rejects_invalid(name: str) -> None:
         parse_source_name(name)
 
 
-def test_options_round_trip() -> None:
-    src = bench_source("claims_faq", "1.0.0", split="test", tags=["a", "b"], limit=5)
-    assert src == "bench:claims_faq@1.0.0?split=test&tags=a,b&limit=5"
-    ref = parse_source_name(src)
+def test_options_are_parsed() -> None:
+    ref = parse_source_name("eval.questions?split=test&tags=a,b&limit=5")
     assert ref.options == SourceOptions(split="test", tags=("a", "b"), limit=5)
-
-
-def test_view_name() -> None:
-    assert view_name("claims_faq", "10.0.3") == "v_claims_faq__10_0_3"
 
 
 def test_sampling_is_deterministic_and_seeded() -> None:

@@ -38,14 +38,14 @@ def test_settings_from_env() -> None:
     settings = Settings.from_env(
         {
             "TRULENS_PG_DATABASE_URL": "postgresql://h/db",
-            "TRULENS_PG_BENCH_SCHEMA": "evals",
+            "TRULENS_PG_SCHEMA": "evals",
             "TRULENS_PG_MIN_CALIBRATION_LABELS": "5",
             "TRULENS_PG_MIN_SPEARMAN": "0.6",
             "TRULENS_PG_JUDGE_PROVIDER": "openai",
             "TRULENS_PG_JUDGE_MODEL": "gpt-4o-mini",
         }
     )
-    assert settings.bench_schema == "evals"
+    assert settings.schema == "evals"
     assert settings.min_calibration_labels == 5
     assert settings.min_spearman == 0.6
     assert settings.judge == {"provider": "openai", "model": "gpt-4o-mini"}

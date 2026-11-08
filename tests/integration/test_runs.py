@@ -14,6 +14,7 @@ from trulens.core.run import RunConfig
 from trulens.otel.semconv.trace import SpanAttributes
 
 import trulens_pg as tpg
+from tests.conftest import GOLDEN_SET
 from trulens_pg.errors import SourceError
 
 pytestmark = pytest.mark.pg
@@ -79,16 +80,16 @@ def test_g1_plain_truapp_fails_and_wrap_fixes_it(ctx: Any) -> None:
 def test_g2_table_source_and_column_check(ctx: Any) -> None:
     table = _unique("questions")
     with ctx.engine.begin() as conn:
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS bench_eval"))
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS tpg_eval"))
         conn.execute(
             text(
-                f"CREATE TABLE bench_eval.{table} (item_id text, input text, "
+                f"CREATE TABLE tpg_eval.{table} (item_id text, input text, "
                 "ground_truth_output text, contexts jsonb, tags text[])"
             )
         )
         conn.execute(
             text(
-                f"INSERT INTO bench_eval.{table} VALUES "
+                f"INSERT INTO tpg_eval.{table} VALUES "
                 "('1', 'motor glass?', 'yes', '[\"c1\", \"c2\"]', '{motor}'), "
                 "('2', 'home flood?', 'no', '[]', '{home}')"
             )
@@ -100,7 +101,7 @@ def test_g2_table_source_and_column_check(ctx: Any) -> None:
         tru_app.add_run(
             RunConfig(
                 run_name=_unique("bad"),
-                dataset_name=f"bench_eval.{table}",
+                dataset_name=f"tpg_eval.{table}",
                 source_type="TABLE",
                 dataset_spec={"input": "question"},
             )
@@ -109,20 +110,20 @@ def test_g2_table_source_and_column_check(ctx: Any) -> None:
         tru_app.add_run(
             RunConfig(
                 run_name=_unique("bad"),
-                dataset_name="bench_eval.missing_table",
+                dataset_name="tpg_eval.missing_table",
                 source_type="TABLE",
                 dataset_spec={"input": "input"},
             )
         )
 
-    df = tru_app.run_dao.fetch_source_data(f"bench_eval.{table}?tags=motor")
+    df = tru_app.run_dao.fetch_source_data(f"tpg_eval.{table}?tags=motor")
     assert list(df["input"]) == ["motor glass?"]
     assert df.loc[0, "contexts"] == ["c1", "c2"]  # JSONB arrives as a Python list
 
     run = tru_app.add_run(
         RunConfig(
             run_name=_unique("run"),
-            dataset_name=f"bench_eval.{table}",
+            dataset_name=f"tpg_eval.{table}",
             source_type="TABLE",
             dataset_spec={"input": "input", "ground_truth_output": "ground_truth_output"},
         )
@@ -139,13 +140,13 @@ def test_log_ingestion_from_table(ctx: Any) -> None:
 
     table = _unique("logged")
     with ctx.engine.begin() as conn:
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS bench_eval"))
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS tpg_eval"))
         conn.execute(
-            text(f"CREATE TABLE bench_eval.{table} (input text, output text, contexts text[])")
+            text(f"CREATE TABLE tpg_eval.{table} (input text, output text, contexts text[])")
         )
         conn.execute(
             text(
-                f"INSERT INTO bench_eval.{table} VALUES "
+                f"INSERT INTO tpg_eval.{table} VALUES "
                 "('q1', 'a1 KFZ-1001', '{ctx a,ctx b}'), ('q2', 'a2', '{ctx c}')"
             )
         )
@@ -153,7 +154,7 @@ def test_log_ingestion_from_table(ctx: Any) -> None:
     run = tru_app.add_run(
         RunConfig(
             run_name=_unique("run"),
-            dataset_name=f"bench_eval.{table}",
+            dataset_name=f"tpg_eval.{table}",
             source_type="TABLE",
             mode=Mode.LOG_INGESTION,
             dataset_spec={
@@ -181,10 +182,10 @@ def test_log_ingestion_from_table(ctx: Any) -> None:
     assert sorted(records["n_contexts"]) == [0.5, 1.0]
 
 
-def test_benchmark_source_with_stored_metrics(
-    ctx: Any, repo: Any, store: Any, published: Any, fake_judge: Any
+def test_table_source_with_stored_metrics(
+    ctx: Any, store: Any, claims_table: str, fake_judge: Any
 ) -> None:
-    # Stored metrics: a deterministic python_ref and a calibrated llm_judge.
+    # Stored metrics: a deterministic python_ref, a calibrated llm_judge, an IR metric.
     store.create_metric("has_policy_number", "python_ref", description="Cites a policy number")
     ref = store.create_draft("has_policy_number", python_ref="contains_policy_number")
     store.publish(ref.metric_version_id, published_by="tester")
@@ -212,9 +213,7 @@ def test_benchmark_source_with_stored_metrics(
     gt = store.create_draft("context_recall_at_2", params={"method": "recall_at_k", "k": 2})
     store.publish(gt.metric_version_id, published_by="tester")
     store.create_metric_set(
-        "claims-rag-v1",
-        ["has_policy_number@1", "policy_citation@1", "context_recall_at_2@1"],
-        dataset="claims_faq",
+        "claims-rag-v1", ["has_policy_number@1", "policy_citation@1", "context_recall_at_2@1"]
     )
 
     rag = ClaimsRag()
@@ -223,14 +222,21 @@ def test_benchmark_source_with_stored_metrics(
     run = tru_app.add_run(
         RunConfig(
             run_name=run_name,
-            dataset_name=tpg.bench_source("claims_faq", "1.0.0", split="test"),
+            dataset_name=f"{claims_table}?split=test",
             source_type="TABLE",
-            dataset_spec={"input": "input", "ground_truth_output": "ground_truth_output"},
+            dataset_spec={"input": "question", "ground_truth_output": "answer"},
             llm_judge_name="fake-judge-1",
         )
     )
     run.start()
-    tpg.compute_metrics(run, ["claims-rag-v1"], judge=fake_judge, timeout=60, poll_interval=0.5)
+    tpg.compute_metrics(
+        run,
+        ["claims-rag-v1"],
+        judge=fake_judge,
+        golden_set=pd.DataFrame(GOLDEN_SET),
+        timeout=60,
+        poll_interval=0.5,
+    )
 
     records, metrics = ctx.session.get_records_and_feedback(
         app_name=tru_app.app_name, run_name=run_name
@@ -241,62 +247,17 @@ def test_benchmark_source_with_stored_metrics(
     # Golden chunks of items 1, 3, 5 are c1, c0, c2; ClaimsRag retrieves c1 and c0.
     assert records["context_recall_at_2@1"].mean() == pytest.approx(2 / 3)
 
-    version = repo.get_version("claims_faq", "1.0.0")
-    links = repo.runs_for_version(version.version_id)
-    assert list(links["run_name"]) == [run_name]
-    assert links.loc[0, "judge_model"] == "fake-judge-1"
     used = store.run_metrics(run_name, tru_app.app_name)
     assert sorted(used["name"]) == ["context_recall_at_2", "has_policy_number", "policy_citation"]
     assert set(used["judge_model"].dropna()) == {"fakejudge:fake-judge-1"}
 
-    summary = repo.run_metric_summary(version.version_id, ctx.session)
-    assert set(summary["metric"]) == set(metrics)
-    assert (summary["n"] == 3).all()
 
+def test_ground_truth_metric_needs_golden_set(ctx: Any, store: Any) -> None:
+    from trulens_pg.errors import MetricResolutionError
 
-def test_unpublished_benchmark_version_is_not_a_source(ctx: Any, repo: Any) -> None:
-    repo.create_dataset("drafty")
-    repo.create_draft("drafty", copy_from=None)
-    rag = ClaimsRag()
-    tru_app = tpg.wrap(rag, app_name=_unique("claims"), app_version="v1", main_method=rag.answer)
-    with pytest.raises(SourceError, match="only published versions"):
-        tru_app.add_run(
-            RunConfig(
-                run_name=_unique("r"),
-                dataset_name="bench:drafty@1.0.0",
-                source_type="TABLE",
-                dataset_spec={"input": "input"},
-            )
-        )
-
-
-def test_production_traces_become_draft_items(ctx: Any, repo: Any, store: Any) -> None:
-    """Spec section 6.1: import recorded traces through TruLens curate_records_to_dataset."""
-    from trulens_pg import trulens_store
-
-    rag = ClaimsRag()
-    app_name = _unique("prod")
-    tru_app = tpg.wrap(rag, app_name=app_name, app_version="v1", main_method=rag.answer)
-    run = tru_app.add_run(
-        RunConfig(run_name=_unique("r"), dataset_name="prod", dataset_spec={"input": "input"})
-    )
-    run.start(input_df=pd.DataFrame({"input": ["motor glass?", "home flood?", "motor theft?"]}))
-    tpg.metrics.resolve.wait_for_invocation(run, timeout=60, poll_interval=0.5)
-
-    records, _ = ctx.session.get_records_and_feedback(app_name=app_name)
-    assert len(records) == 3
-    selected = trulens_store.filter_traces(records)
-    result, items = trulens_store.traces_to_items(
-        store.trulens, selected, dataset="claims_faq", expected_response="output"
-    )
-    assert result.accepted == 3
-    assert result.dataset_name.startswith("trulens-pg-import/claims_faq/")
-    assert {i["query"] for i in items} == {"motor glass?", "home flood?", "motor theft?"}
-    first = next(i for i in items if i["query"] == "motor glass?")
-    assert first["ground_truth_answer"].startswith("Covered under clause KFZ-1001")
-    assert first["metadata"]["source_app_name"] == app_name
-    assert first["external_id"].startswith("trace-")
-
-    repo.create_dataset("claims_faq")
-    draft = repo.create_draft("claims_faq", copy_from=None)
-    assert repo.add_items(draft.version_id, items) == 3
+    store.create_metric("recall", "ground_truth")
+    gt = store.create_draft("recall", params={"method": "recall_at_k", "k": 2})
+    store.publish(gt.metric_version_id, published_by="tester")
+    with pytest.raises(MetricResolutionError, match="golden_set"):
+        tpg.resolve_metrics(["recall"], store=store)
+    assert len(tpg.resolve_metrics(["recall"], store=store, golden_set=GOLDEN_SET)) == 1

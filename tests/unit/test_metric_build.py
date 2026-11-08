@@ -15,13 +15,13 @@ from trulens_pg.metrics.build import (
     validate_definition,
 )
 from trulens_pg.metrics.judges import JudgeConfig, resolve_judge
+from trulens_pg.metrics.prompts import make_resolved_prompt
 from trulens_pg.metrics.store import (
     call_on_label,
     mean_abs_error,
     parse_metric_ref,
     spearman,
 )
-from trulens_pg.trulens_store import make_resolved_prompt
 
 TEMPLATE = "Question: {{question}}\nAnswer: {{ answer }}\nContexts: {{contexts}}"
 

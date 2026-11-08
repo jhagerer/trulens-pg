@@ -1,4 +1,4 @@
-"""Alembic environment for the bench schema (used programmatically only)."""
+"""Alembic environment for the trulens_pg schema (used programmatically only)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from trulens_pg.migrations import VERSION_TABLE
 
 config = context.config
 engine: Engine = config.attributes["engine"]
-schema: str = config.attributes["bench_schema"]
+schema: str = config.attributes["schema"]
 
 
 def run_migrations_online() -> None:
@@ -23,7 +23,7 @@ def run_migrations_online() -> None:
             transaction_per_migration=True,
         )
         with context.begin_transaction():
-            context.run_migrations(bench_schema=schema)
+            context.run_migrations(schema=schema)
 
 
 if context.is_offline_mode():  # pragma: no cover

@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from trulens_pg.errors import MetricResolutionError, NotFoundError, TrulensPgError
-from trulens_pg.metrics.build import MetricDefinition, build_metric
+from trulens_pg.metrics.build import GoldenSet, MetricDefinition, build_metric
 from trulens_pg.metrics.judges import judge_model_label
 from trulens_pg.metrics.store import MetricStore
 
@@ -65,8 +65,7 @@ def resolve_metrics(
     metrics: Sequence[Any],
     judge: Any = None,
     *,
-    dataset: str | None = None,
-    golden_set: list[dict[str, Any]] | None = None,
+    golden_set: GoldenSet | None = None,
     store: MetricStore | None = None,
 ) -> list[Any]:
     """Build TruLens ``Metric`` objects from stored metrics; pass ``Metric`` objects through.
@@ -77,24 +76,17 @@ def resolve_metrics(
             ``"set:claims-rag-v1"``), or TruLens ``Metric`` objects.
         judge: TruLens provider object or `JudgeConfig`; default: the judge
             stored with each metric version, then ``TRULENS_PG_JUDGE_*``.
-        dataset: ``bench:<dataset>@<version>``; supplies the golden set for
-            ``ground_truth`` metrics.
-        golden_set: Golden set in TruLens ``GroundTruthAgreement`` format.
+        golden_set: Ground truth for ``ground_truth`` metrics in the TruLens
+            ``GroundTruthAgreement`` format: a list of dicts or a DataFrame with
+            ``query``, ``expected_response`` and ``expected_chunks`` (list of
+            ``{"text": ...}``), for example read from a Postgres table or from
+            ``TruSession.get_ground_truth(name)``.
         store: Metric store (default: from the current `connect()` context).
 
     Returns:
         List of ``Metric`` objects, in input order.
     """
     definitions = resolve_definitions(metrics, store=store)
-    needs_golden = any(
-        isinstance(d, MetricDefinition) and d.kind == "ground_truth" for d in definitions
-    )
-    if needs_golden and golden_set is None and dataset is not None:
-        from trulens_pg.bench.repository import Repository
-
-        repo = Repository(store.raw_engine, store.bench_schema) if store else None
-        repo = repo or Repository.from_context()
-        golden_set = repo.golden_set(repo.resolve_source(dataset).version_id)
 
     result = []
     for item in definitions:
@@ -129,25 +121,19 @@ def compute_metrics(
     metrics: Sequence[Any],
     judge: Any = None,
     *,
-    dataset: str | None = None,
-    golden_set: list[dict[str, Any]] | None = None,
+    golden_set: GoldenSet | None = None,
     store: MetricStore | None = None,
     timeout: float = 600.0,
     poll_interval: float = 2.0,
 ) -> str:
     """``run.compute_metrics(resolve_metrics(metrics, judge))`` after the invocation completes.
 
-    Stored metric versions and their judge are recorded in ``bench.run_metric``.
-    For ``bench:`` runs the run's dataset is used for ground-truth metrics.
+    Stored metric versions and their judge are recorded in the ``run_metric`` table.
     """
     wait_for_invocation(run, timeout=timeout, poll_interval=poll_interval)
-    if dataset is None:
-        source = getattr(getattr(run, "source_info", None), "name", None)
-        if isinstance(source, str) and source.startswith("bench:"):
-            dataset = source
     if store is None and any(isinstance(x, str) for x in metrics):
         store = MetricStore.from_context()
-    resolved = resolve_metrics(metrics, judge, dataset=dataset, golden_set=golden_set, store=store)
+    resolved = resolve_metrics(metrics, judge, golden_set=golden_set, store=store)
     status: str = run.compute_metrics(resolved)
 
     by_judge: dict[str | None, list[str]] = defaultdict(list)

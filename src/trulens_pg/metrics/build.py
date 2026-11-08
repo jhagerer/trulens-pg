@@ -20,10 +20,15 @@ from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from typing import Any
 
+import pandas as pd
+
 from trulens_pg.errors import MetricResolutionError, ValidationError
 from trulens_pg.metrics.judges import resolve_judge
 
 ENTRY_POINT_GROUP = "trulens_pg.metrics"
+
+GoldenSet = list[dict[str, Any]] | pd.DataFrame
+"""Ground truth for ``ground_truth`` metrics (TruLens ``GroundTruthAgreement`` format)."""
 KINDS = ("llm_judge", "criteria", "ground_truth", "python_ref")
 JUDGE_KINDS = frozenset({"llm_judge", "criteria"})
 """Kinds scored by an LLM judge; they need calibration before publish."""
@@ -102,7 +107,7 @@ def make_selector(name: str) -> Any:
 
 def template_placeholders(template: str) -> list[str]:
     """Variables of a judge prompt (TruLens ``{{name}}`` placeholders only)."""
-    from trulens_pg.trulens_store import prompt_variables
+    from trulens_pg.metrics.prompts import prompt_variables
 
     return prompt_variables(template)
 
@@ -119,7 +124,7 @@ class MetricDefinition:
     prompt_version_id: str | None = None
     """Exact TruLens ``PromptVersion`` id of the judge prompt (``llm_judge``)."""
     prompt: Any = None
-    """The loaded ``ResolvedPrompt`` of ``prompt_version_id`` (not stored in bench)."""
+    """The loaded ``ResolvedPrompt`` of ``prompt_version_id`` (not stored in the metric tables)."""
     rubric: str | None = None
     criteria: str | None = None
     score_min: int = 0
@@ -357,7 +362,7 @@ def build_implementation(
     defn: MetricDefinition,
     judge: Any = None,
     *,
-    golden_set: list[dict[str, Any]] | None = None,
+    golden_set: GoldenSet | None = None,
 ) -> tuple[Callable[..., Any], dict[str, Any], dict[str, Any]]:
     """Return ``(callable, Metric keyword arguments, judge info)`` for a definition.
 
@@ -405,8 +410,9 @@ def build_implementation(
         method = defn.params["method"]
         if golden_set is None:
             raise MetricResolutionError(
-                f"Metric {defn.ref} compares with ground truth: pass dataset='bench:<ds>@<ver>' "
-                "or golden_set=[...] to resolve_metrics()."
+                f"Metric {defn.ref} compares with ground truth: pass golden_set= to "
+                "resolve_metrics() or compute_metrics() (a list of dicts or a DataFrame with "
+                "query, expected_response and expected_chunks)."
             )
         if method == "agreement_measure":
             provider, info = resolve_judge(judge, defn.judge)
@@ -472,7 +478,7 @@ def build_metric(
     defn: MetricDefinition,
     judge: Any = None,
     *,
-    golden_set: list[dict[str, Any]] | None = None,
+    golden_set: GoldenSet | None = None,
 ) -> Any:
     """Build a TruLens ``Metric`` named ``<name>@<version>`` from a stored definition."""
     from trulens.core.metric import Metric

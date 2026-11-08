@@ -21,7 +21,7 @@ OBJECT_TYPE = "APP"
 def make_run_dao(context: PgContext | None = None) -> PgRunDao:
     """Create a `PgRunDao` for the current (or given) context."""
     ctx = context or get_context()
-    return PgRunDao(db=ctx.session.connector.db, engine=ctx.engine, bench_schema=ctx.bench_schema)
+    return PgRunDao(db=ctx.session.connector.db, engine=ctx.engine)
 
 
 def attach(tru_app: Any, *, context: PgContext | None = None) -> Any:

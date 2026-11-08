@@ -16,17 +16,18 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from trulens_pg import hashing
-from trulens_pg.bench import models as m
-from trulens_pg.bench.db import BenchDB
 from trulens_pg.config import Settings
 from trulens_pg.errors import NotFoundError, ValidationError, WorkflowError
+from trulens_pg.metrics import models as m
 from trulens_pg.metrics.build import (
     JUDGE_KINDS,
     KINDS,
+    GoldenSet,
     MetricDefinition,
     build_implementation,
     validate_definition,
 )
+from trulens_pg.metrics.db import StoreDB
 from trulens_pg.metrics.judges import judge_model_label
 
 DEFINITION_FIELDS = (
@@ -150,8 +151,8 @@ def call_on_label(
     return _score_of(result), _reason_of(result)
 
 
-class MetricStore(BenchDB):
-    """Data access for custom metric definitions in the bench schema."""
+class MetricStore(StoreDB):
+    """Data access for custom metric definitions in the trulens_pg schema."""
 
     # ------------------------------------------------------------------ metrics
 
@@ -256,7 +257,7 @@ class MetricStore(BenchDB):
             return None
         cache: dict[str, Any] = self.__dict__.setdefault("_prompt_cache", {})
         if version_id not in cache:
-            cache[version_id] = self.trulens.resolve_prompt_version(version_id)
+            cache[version_id] = self.prompts.resolve_prompt_version(version_id)
         return cache[version_id]
 
     def _prompt_fields(
@@ -268,10 +269,10 @@ class MetricStore(BenchDB):
         created_by: str | None,
     ) -> dict[str, Any]:
         """Turn ``prompt_text`` into a new registry version; check a given version id."""
-        from trulens_pg.trulens_store import default_prompt_slug
+        from trulens_pg.metrics.prompts import default_prompt_slug
 
         if prompt_text is not None:
-            version = self.trulens.create_judge_prompt_version(
+            version = self.prompts.create_judge_prompt_version(
                 prompt_slug or default_prompt_slug(name),
                 prompt_text,
                 description=f"Judge prompt of the trulens-pg metric {name}",
@@ -457,7 +458,6 @@ class MetricStore(BenchDB):
     def add_labels(self, name: str, labels: Iterable[Mapping[str, Any]]) -> int:
         """Add human-scored examples: question, answer, contexts, ground_truth, human_score."""
         allowed = {
-            "item_id",
             "question",
             "answer",
             "contexts",
@@ -486,7 +486,6 @@ class MetricStore(BenchDB):
                 s.add(
                     m.MetricLabel(
                         metric_id=metric.metric_id,
-                        item_id=uuid.UUID(str(label["item_id"])) if label.get("item_id") else None,
                         question=label.get("question"),
                         answer=label.get("answer"),
                         contexts=list(contexts),
@@ -509,7 +508,6 @@ class MetricStore(BenchDB):
             rows = [
                 {
                     "label_id": str(lb.label_id),
-                    "item_id": str(lb.item_id) if lb.item_id else None,
                     "question": lb.question,
                     "answer": lb.answer,
                     "contexts": list(lb.contexts or []),
@@ -524,7 +522,6 @@ class MetricStore(BenchDB):
             rows,
             columns=[
                 "label_id",
-                "item_id",
                 "question",
                 "answer",
                 "contexts",
@@ -548,7 +545,7 @@ class MetricStore(BenchDB):
         metric_version_id: uuid.UUID | str,
         judge: Any = None,
         *,
-        golden_set: list[dict[str, Any]] | None = None,
+        golden_set: GoldenSet | None = None,
         limit: int | None = None,
     ) -> CalibrationResult:
         """Score the labelled examples with this version and compare with the human scores.
@@ -700,10 +697,9 @@ class MetricStore(BenchDB):
         name: str,
         refs: Sequence[str],
         *,
-        dataset: str | None = None,
         created_by: str | None = None,
     ) -> m.MetricSet:
-        """Bundle fixed, published metric versions (``name@version``) for a benchmark."""
+        """Bundle fixed, published metric versions (``name@version``), e.g. ``claims-rag-v1``."""
         check_set_name(name)
         if not refs:
             raise ValidationError("A metric set needs at least one metric version.")
@@ -717,15 +713,7 @@ class MetricStore(BenchDB):
         with self.transaction() as s:
             if s.scalar(select(m.MetricSet).where(m.MetricSet.name == name)) is not None:
                 raise ValidationError(f"Metric set {name!r} already exists.")
-            dataset_id = None
-            if dataset:
-                ds = s.scalar(select(m.Dataset).where(m.Dataset.name == dataset))
-                if ds is None:
-                    raise NotFoundError(f"Dataset {dataset!r} does not exist.")
-                dataset_id = ds.dataset_id
-            metric_set = m.MetricSet(
-                name=name, dataset_id=dataset_id, metric_version_ids=ids, created_by=created_by
-            )
+            metric_set = m.MetricSet(name=name, metric_version_ids=ids, created_by=created_by)
             s.add(metric_set)
         return metric_set
 
@@ -761,19 +749,15 @@ class MetricStore(BenchDB):
                 for mv_id in ms.metric_version_ids:
                     mv = s.get(m.MetricVersion, mv_id)
                     refs.append(f"{mv.metric.name}@{mv.version}" if mv else str(mv_id))
-                ds = s.get(m.Dataset, ms.dataset_id) if ms.dataset_id else None
                 rows.append(
                     {
                         "name": ms.name,
-                        "dataset": ds.name if ds else None,
                         "metrics": ", ".join(refs),
                         "created_by": ms.created_by,
                         "created_at": ms.created_at,
                     }
                 )
-        return pd.DataFrame(
-            rows, columns=["name", "dataset", "metrics", "created_by", "created_at"]
-        )
+        return pd.DataFrame(rows, columns=["name", "metrics", "created_by", "created_at"])
 
     # --------------------------------------------------------------------- runs
 
@@ -785,7 +769,7 @@ class MetricStore(BenchDB):
         metric_version_ids: Iterable[uuid.UUID | str],
         judge_model: str | None = None,
     ) -> None:
-        """Fill ``bench.run_metric``: which metric versions (and judge) a run used."""
+        """Fill ``run_metric``: which metric versions (and judge) a run used."""
         with self.transaction() as s:
             for mv_id in metric_version_ids:
                 stmt = insert(m.RunMetric).values(
